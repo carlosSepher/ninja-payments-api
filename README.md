@@ -61,16 +61,16 @@ Key traits:
 flowchart TD
   A[Frontend]
   B[ninja-payments-api]
-  C[PSP REST (Webpay/Stripe/PayPal)]
+  C[PSP REST Webpay/Stripe/PayPal]
   D[PSP UI]
   E[Return URL (API)]
   F[PSP SDK/Commit]
 
   A -->|POST /api/payments| B
-  B -->|Create (REST)| C
+  B -->|Create REST| C
   C -->|url, token| B
   B -->|url, token, method| A
-  A -->|Redirect (POST/GET)| D
+  A -->|Redirect POST/GET| D
   D -->|Redirect back| E
   E -->|Commit if needed| F
   F -->|Result| E
