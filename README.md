@@ -63,7 +63,7 @@ flowchart TD
   B[ninja-payments-api]
   C[PSP REST Webpay/Stripe/PayPal]
   D[PSP UI]
-  E[Return URL (API)]
+  E[Return URL API]
   F[PSP SDK/Commit]
 
   A -->|POST /api/payments| B
@@ -118,7 +118,7 @@ stateDiagram-v2
   [*] --> PENDING
   PENDING --> AUTHORIZED: commit response_code == 0
   PENDING --> FAILED: commit response_code != 0
-  PENDING --> CANCELED: TBK_TOKEN (cancel)
+  PENDING --> CANCELED: TBK_TOKEN cancel
 ```
 
 ## Endpoints
@@ -201,18 +201,18 @@ Example redirects:
 
 ```mermaid
 sequenceDiagram
-  participant F as Frontend (Browser)
+  participant F as Frontend Browser
   participant API as ninja-payments-api
-  participant TBK as Webpay (Transbank)
+  participant TBK as Webpay Transbank
 
-  F->>API: POST /api/payments (provider=webpay)
-  API->>TBK: Create transaction (REST)
+  F->>API: POST /api/payments provider=webpay
+  API->>TBK: Create transaction REST
   TBK-->>API: {url, token}
   API-->>F: {status:PENDING, redirect:{url, token, method:POST}}
-  F->>TBK: POST redirect.url (token_ws)
+  F->>TBK: POST redirect.url token_ws
   TBK-->>F: 302 to return_url with token_ws
   F->>API: GET/POST /api/payments/tbk/return?token_ws=...
-  API->>TBK: commit(token_ws) via SDK
+  API->>TBK: commit token_ws via SDK
   TBK-->>API: response_code
   alt Authorized
     API-->>F: 303 to success_url?status=AUTHORIZED&buy_order=...
@@ -230,17 +230,17 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  participant F as Frontend (Browser)
+  participant F as Frontend Browser
   participant API as ninja-payments-api
   participant PP as PayPal
 
-  F->>API: POST /api/payments (provider=paypal, currency=USD)
+  F->>API: POST /api/payments provider=paypal, currency=USD
   API->>PP: POST /v1/oauth2/token
   PP-->>API: access_token
-  API->>PP: POST /v2/checkout/orders (intent=CAPTURE)
+  API->>PP: POST /v2/checkout/orders intent=CAPTURE
   PP-->>API: {approve_url, order_id}
   API-->>F: {status:PENDING, redirect:{url:approve_url, method:GET}}
-  F->>PP: GET approve_url (user approves)
+  F->>PP: GET approve_url user approves
   PP-->>F: 302 to return_url with token=order_id
   F->>API: GET /api/payments/tbk/return?token=order_id
   API->>PP: POST /v2/checkout/orders/{order_id}/capture
@@ -251,9 +251,9 @@ sequenceDiagram
     API-->>F: 303 to failure_url?status=FAILED&buy_order=...
   end
   opt User cancels
-    PP-->>F: 302 to cancel_url (recommend API return with paypal_cancel=1)
+    PP-->>F: 302 to cancel_url recommend API return with paypal_cancel=1
     F->>API: GET /api/payments/tbk/return?paypal_cancel=1&token=order_id
-    API-->>F: 303 to cancel_url (front)?status=CANCELED&buy_order=...
+    API-->>F: 303 to cancel_url front ?status=CANCELED&buy_order=...
   end
 ```
 
@@ -261,21 +261,21 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  participant F as Frontend (Browser)
+  participant F as Frontend Browser
   participant API as ninja-payments-api
   participant ST as Stripe
 
-  F->>API: POST /api/payments (provider=stripe)
+  F->>API: POST /api/payments provider=stripe
   API->>ST: Create Checkout Session
   ST-->>API: {session.url, session.id}
   API-->>F: {status:PENDING, redirect:{url:session.url, method:GET}}
-  F->>ST: GET session.url (Checkout)
+  F->>ST: GET session.url Checkout
   alt User completes
-    ST-->>F: 302 to success_url (front)
+    ST-->>F: 302 to success_url front
   else User cancels
-    ST-->>F: 302 to cancel_url (front)
+    ST-->>F: 302 to cancel_url front
   end
-  opt Webhook (recommended)
+  opt Webhook recommended
     ST-->>API: checkout.session.completed
     API: mark AUTHORIZED for the order
   end
