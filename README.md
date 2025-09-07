@@ -58,14 +58,23 @@ Key traits:
 ## Architecture
 
 ```mermaid
-graph TD
-  A[Frontend] -- POST /api/payments --> B[FastAPI App]
-  B -->|Create via REST| C[Transbank Webpay Plus REST]
-  A <-.returns redirect data.-> B
-  A -- Auto-POST token_ws --> D[Webpay Browser Flow]
-  D -- Redirect with token_ws/TBK_TOKEN --> E[/return_url (API)/]
-  E -->|Commit via SDK| F[Transbank SDK]
-  E -->|303 Redirect| A
+flowchart TD
+  A[Frontend]
+  B[FastAPI API]
+  C[Transbank REST]
+  D[Webpay UI]
+  E[Return URL ]
+  F[Transbank SDK]
+
+  A -->|POST /api/payments| B
+  B -->|Create | C
+  C -->|url, token| B
+  B -->|url, token| A
+  A -->|Auto-POST token_ws| D
+  D -->|Redirect token_ws/TBK_TOKEN| E
+  E -->|Commit| F
+  F -->|Result| E
+  E -->|303 to Front| A
 ```
 
 Components:
