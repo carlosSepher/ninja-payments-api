@@ -44,6 +44,9 @@ class PaymentsService:
             buy_order=request.buy_order,
             amount=request.amount,
             currency=request.currency,
+            success_url=request.success_url,
+            failure_url=request.failure_url,
+            cancel_url=request.cancel_url,
         )
         redirect_url, token = await self.provider.create(payment, request.return_url)
         payment.token = token

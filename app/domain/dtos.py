@@ -15,6 +15,16 @@ class PaymentCreateRequest(BaseModel):
     amount: int
     currency: Currency
     return_url: str = Field(..., description="URL where Webpay will redirect")
+    # Optional frontend redirects after processing the return
+    success_url: str | None = Field(
+        default=None, description="Front URL to redirect when authorized"
+    )
+    failure_url: str | None = Field(
+        default=None, description="Front URL to redirect when failed"
+    )
+    cancel_url: str | None = Field(
+        default=None, description="Front URL to redirect when canceled"
+    )
 
 
 class RedirectInfo(BaseModel):

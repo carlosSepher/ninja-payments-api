@@ -1,0 +1,65 @@
+{
+  "info": {
+    "name": "ninja-payments-api (hardcoded)",
+    "_postman_id": "27c7f0d2-1f77-4c42-8d3f-2d2e6a7a9b1a",
+    "description": "Colección para probar ninja-payments-api con URLs fijas y sin variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "http://localhost:8000/health" }
+      }
+    },
+    {
+      "name": "Create Payment",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer dev-token", "type": "text" },
+          { "key": "Content-Type", "value": "application/json", "type": "text" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"buy_order\": \"o-123\",\n  \"amount\": 1000,\n  \"currency\": \"CLP\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"success_url\": \"http://localhost:3000/checkout/success\",\n  \"failure_url\": \"http://localhost:3000/checkout/failure\",\n  \"cancel_url\": \"http://localhost:3000/checkout/canceled\"\n}"
+        },
+        "url": { "raw": "http://localhost:8000/api/payments" }
+      }
+    },
+    {
+      "name": "Return Commit (GET)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "http://localhost:8000/api/payments/tbk/return?token_ws=REPLACE_WITH_TOKEN" }
+      }
+    },
+    {
+      "name": "Return Cancel (GET)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "http://localhost:8000/api/payments/tbk/return?TBK_TOKEN=REPLACE_WITH_TOKEN" }
+      }
+    },
+    {
+      "name": "Return Commit (POST form)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/x-www-form-urlencoded", "type": "text" }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "token_ws", "value": "REPLACE_WITH_TOKEN", "type": "text" }
+          ]
+        },
+        "url": { "raw": "http://localhost:8000/api/payments/tbk/return" }
+      }
+    }
+  ]
+}

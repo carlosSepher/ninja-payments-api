@@ -18,3 +18,7 @@ class Payment:
     status: PaymentStatus = PaymentStatus.PENDING
     token: str | None = None
     redirect_url: str | None = None
+    # Optional frontend redirect URLs
+    success_url: str | None = None
+    failure_url: str | None = None
+    cancel_url: str | None = None
