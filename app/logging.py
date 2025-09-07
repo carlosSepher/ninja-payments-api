@@ -14,7 +14,20 @@ class JsonFormatter(logging.Formatter):
             "name": record.name,
             "message": record.getMessage(),
         }
-        extra_fields = ("buy_order", "token", "response_code")
+        # Whitelisted extra fields to enrich logs
+        extra_fields = (
+            "buy_order",
+            "token",
+            "response_code",
+            "status",
+            "idempotency_key",
+            "endpoint",
+            "method",
+            "redirect_to",
+            "event",
+            "currency",
+            "amount",
+        )
         for field in extra_fields:
             if hasattr(record, field):
                 data[field] = getattr(record, field)

@@ -191,7 +191,7 @@ Example redirects:
 ```mermaid
 sequenceDiagram
   participant F as Frontend
-  participant API as Your API
+  participant API as ninja-payments-api
   participant TBK as Transbank REST/SDK
 
   F->>API: POST /api/payments (buy_order, amount, currency, return_url, success/failure URLs)
@@ -211,7 +211,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   participant F as Frontend
-  participant API as Your API
+  participant API as ninja-payments-api
   participant TBK as Transbank
 
   TBK-->>F: Redirect to return_url?TBK_TOKEN=...
@@ -281,3 +281,20 @@ Minimal form example:
 
 - Import the included collection: `ninja-payments-api.postman_collection.json`.
 - Or import the live OpenAPI spec from the running service: `http://localhost:8000/openapi.json`.
+
+## Demo Frontend
+
+A minimal static frontend is included under `frontend/` to simulate the full flow end‑to‑end.
+
+Run locally:
+
+```bash
+# in the repo root, with API running on :8000
+python -m http.server 3000 -d frontend
+# open http://localhost:3000 in your browser
+```
+
+Notes:
+- The API has permissive CORS for development.
+- Use the form to set API base (`http://localhost:8000`) and the bearer token.
+- On create, the page will auto‑POST the token to Webpay and you’ll be redirected back through the API to `success.html`, `failure.html` or `canceled.html` with `status` and `buy_order` in the query string.
