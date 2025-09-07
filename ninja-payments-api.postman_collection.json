@@ -24,7 +24,22 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"buy_order\": \"o-123\",\n  \"amount\": 1000,\n  \"currency\": \"CLP\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"success_url\": \"http://localhost:3000/checkout/success\",\n  \"failure_url\": \"http://localhost:3000/checkout/failure\",\n  \"cancel_url\": \"http://localhost:3000/checkout/canceled\"\n}"
+          "raw": "{\n  \"buy_order\": \"o-123\",\n  \"amount\": 1000,\n  \"currency\": \"CLP\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"provider\": \"webpay\",\n  \"success_url\": \"http://localhost:3000/checkout/success\",\n  \"failure_url\": \"http://localhost:3000/checkout/failure\",\n  \"cancel_url\": \"http://localhost:3000/checkout/canceled\"\n}"
+        },
+        "url": { "raw": "http://localhost:8000/api/payments" }
+      }
+    },
+    {
+      "name": "Create Payment (PayPal)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer dev-token", "type": "text" },
+          { "key": "Content-Type", "value": "application/json", "type": "text" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"buy_order\": \"o-pp-123\",\n  \"amount\": 1000,\n  \"currency\": \"USD\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"provider\": \"paypal\",\n  \"success_url\": \"http://localhost:3000/success.html\",\n  \"failure_url\": \"http://localhost:3000/failure.html\",\n  \"cancel_url\": \"http://localhost:8000/api/payments/tbk/return?paypal_cancel=1\"\n}"
         },
         "url": { "raw": "http://localhost:8000/api/payments" }
       }

@@ -60,19 +60,19 @@ Key traits:
 ```mermaid
 flowchart TD
   A[Frontend]
-  B[FastAPI API]
-  C[Transbank REST]
-  D[Webpay UI]
-  E[Return URL ]
-  F[Transbank SDK]
+  B[ninja-payments-api]
+  C[PSP REST (Webpay/Stripe/PayPal)]
+  D[PSP UI]
+  E[Return URL (API)]
+  F[PSP SDK/Commit]
 
   A -->|POST /api/payments| B
-  B -->|Create | C
+  B -->|Create (REST)| C
   C -->|url, token| B
-  B -->|url, token| A
-  A -->|Auto-POST token_ws| D
-  D -->|Redirect token_ws/TBK_TOKEN| E
-  E -->|Commit| F
+  B -->|url, token, method| A
+  A -->|Redirect (POST/GET)| D
+  D -->|Redirect back| E
+  E -->|Commit if needed| F
   F -->|Result| E
   E -->|303 to Front| A
 ```
@@ -81,7 +81,7 @@ Components:
 - App: `app/main.py` wires routers and logging.
 - Routes: `app/routes/health.py`, `app/routes/payments.py`.
 - Service: `app/services/payments_service.py` contains business rules.
-- Provider: `app/providers/transbank_webpay_plus.py` does REST create + SDK commit.
+- Provider: `app/providers/` contains provider implementations (Webpay, Stripe, PayPal).
 - Store: `app/repositories/memory_store.py` keeps state per token in RAM.
 - Config: `app/config.py` (Pydantic v2 settings; extra env vars are ignored).
 
@@ -129,8 +129,11 @@ stateDiagram-v2
 - Body:
   - `buy_order` (string)
   - `amount` (int, > 0)
-  - `currency` (string, currently only `CLP`)
+  - `currency` (string):
+    - `CLP` for Webpay (Transbank)
+    - `USD` recommended for PayPal Sandbox
   - `return_url` (string): where Webpay will redirect after payment
+  - `provider` (string, optional): `webpay` (default), `stripe`, or `paypal`. Unsupported providers return 400.
   - `success_url` (string, optional): where to redirect the browser after an authorized payment
   - `failure_url` (string, optional): where to redirect the browser after a failed payment
   - `cancel_url` (string, optional): where to redirect the browser after a canceled payment
@@ -146,6 +149,7 @@ curl -X POST http://localhost:8000/api/payments \
     "amount":1000,
     "currency":"CLP",
     "return_url":"http://localhost:8000/api/payments/tbk/return",
+    "provider":"webpay",
     "success_url":"http://localhost:3000/checkout/success",
     "failure_url":"http://localhost:3000/checkout/failure",
     "cancel_url":"http://localhost:3000/checkout/canceled"
@@ -166,7 +170,7 @@ Response (example):
 }
 ```
 
-Frontend then renders and auto‑submits a form to `redirect.url` with `token_ws`.
+Frontend then renders and auto‑submits a form to `redirect.url` with `token_ws` (Webpay) or navigates via GET (Stripe/PayPal).
 
 2) GET/POST `/api/payments/tbk/return` (Transbank Return)
 - Webpay redirects the user’s browser here with either:
@@ -178,6 +182,11 @@ Frontend then renders and auto‑submits a form to `redirect.url` with `token_ws
   - If `success_url`/`failure_url`/`cancel_url` were provided on creation, the API responds with a `303 See Other` redirect to the corresponding URL, appending `status` and `buy_order` as query parameters.
   - Otherwise, it returns a JSON body: `{ "status": "AUTHORIZED|FAILED|CANCELED" }`.
 
+Provider-specific notes:
+- Webpay (Transbank): return carries `token_ws` or `TBK_TOKEN` and the API performs commit.
+- Stripe Checkout: the browser navigates to Stripe and then back to your `success_url`/`cancel_url` directly; use webhooks to confirm status (optional polling via provider `commit`).
+- PayPal Checkout: the browser is redirected to PayPal for approval, then back to the API `return_url` with `token` (order id). The API captures the order (commit). For cancel, set `cancel_url` to the API return endpoint with `?paypal_cancel=1` so the API can mark it as `CANCELED` and redirect to your frontend. In Sandbox, use `USD` currency.
+
 Example redirects:
 - `http://localhost:3000/checkout/success?status=AUTHORIZED&buy_order=o-123`
 - `http://localhost:3000/checkout/failure?status=FAILED&buy_order=o-123`
@@ -186,37 +195,90 @@ Example redirects:
 3) GET `/health`
 - Simple liveness check. Returns `{ "status": "ok" }`.
 
-### Sequence Diagram (Happy Path)
+### Sequence Diagrams
+
+#### Webpay (Transbank)
 
 ```mermaid
 sequenceDiagram
-  participant F as Frontend
+  participant F as Frontend (Browser)
   participant API as ninja-payments-api
-  participant TBK as Transbank REST/SDK
+  participant TBK as Webpay (Transbank)
 
-  F->>API: POST /api/payments (buy_order, amount, currency, return_url, success/failure URLs)
+  F->>API: POST /api/payments (provider=webpay)
   API->>TBK: Create transaction (REST)
   TBK-->>API: {url, token}
-  API-->>F: {status:PENDING, redirect:{url, token}}
-  F->>TBK: Auto-POST form to redirect.url (token_ws)
-  TBK-->>F: Redirect to return_url?token_ws=...
+  API-->>F: {status:PENDING, redirect:{url, token, method:POST}}
+  F->>TBK: POST redirect.url (token_ws)
+  TBK-->>F: 302 to return_url with token_ws
   F->>API: GET/POST /api/payments/tbk/return?token_ws=...
-  API->>TBK: Commit(token_ws) via SDK
-  TBK-->>API: response_code (0 ok)
-  API-->>F: 303 Redirect to success_url?status=AUTHORIZED&buy_order=...
+  API->>TBK: commit(token_ws) via SDK
+  TBK-->>API: response_code
+  alt Authorized
+    API-->>F: 303 to success_url?status=AUTHORIZED&buy_order=...
+  else Failed
+    API-->>F: 303 to failure_url?status=FAILED&buy_order=...
+  end
+  opt User cancels
+    TBK-->>F: 302 to return_url with TBK_TOKEN
+    F->>API: GET/POST /api/payments/tbk/return?TBK_TOKEN=...
+    API-->>F: 303 to cancel_url?status=CANCELED&buy_order=...
+  end
 ```
 
-### Sequence Diagram (Canceled)
+#### PayPal (Checkout Orders v2)
 
 ```mermaid
 sequenceDiagram
-  participant F as Frontend
+  participant F as Frontend (Browser)
   participant API as ninja-payments-api
-  participant TBK as Transbank
+  participant PP as PayPal
 
-  TBK-->>F: Redirect to return_url?TBK_TOKEN=...
-  F->>API: GET/POST /api/payments/tbk/return?TBK_TOKEN=...
-  API-->>F: 303 Redirect to cancel_url?status=CANCELED&buy_order=...
+  F->>API: POST /api/payments (provider=paypal, currency=USD)
+  API->>PP: POST /v1/oauth2/token
+  PP-->>API: access_token
+  API->>PP: POST /v2/checkout/orders (intent=CAPTURE)
+  PP-->>API: {approve_url, order_id}
+  API-->>F: {status:PENDING, redirect:{url:approve_url, method:GET}}
+  F->>PP: GET approve_url (user approves)
+  PP-->>F: 302 to return_url with token=order_id
+  F->>API: GET /api/payments/tbk/return?token=order_id
+  API->>PP: POST /v2/checkout/orders/{order_id}/capture
+  PP-->>API: status=COMPLETED or other
+  alt Completed
+    API-->>F: 303 to success_url?status=AUTHORIZED&buy_order=...
+  else Failed
+    API-->>F: 303 to failure_url?status=FAILED&buy_order=...
+  end
+  opt User cancels
+    PP-->>F: 302 to cancel_url (recommend API return with paypal_cancel=1)
+    F->>API: GET /api/payments/tbk/return?paypal_cancel=1&token=order_id
+    API-->>F: 303 to cancel_url (front)?status=CANCELED&buy_order=...
+  end
+```
+
+#### Stripe (Checkout)
+
+```mermaid
+sequenceDiagram
+  participant F as Frontend (Browser)
+  participant API as ninja-payments-api
+  participant ST as Stripe
+
+  F->>API: POST /api/payments (provider=stripe)
+  API->>ST: Create Checkout Session
+  ST-->>API: {session.url, session.id}
+  API-->>F: {status:PENDING, redirect:{url:session.url, method:GET}}
+  F->>ST: GET session.url (Checkout)
+  alt User completes
+    ST-->>F: 302 to success_url (front)
+  else User cancels
+    ST-->>F: 302 to cancel_url (front)
+  end
+  opt Webhook (recommended)
+    ST-->>API: checkout.session.completed
+    API: mark AUTHORIZED for the order
+  end
 ```
 
 ## Security
@@ -235,6 +297,13 @@ Environment variables (Pydantic settings; case-insensitive):
 - `TBK_API_BASE` (default `/rswebpaytransaction/api/webpay/v1.2`)
 - `PROVIDER` (default `transbank`)
 - `RETURN_URL` (fallback default: `http://localhost:8000/api/payments/tbk/return`)
+- Stripe:
+  - `STRIPE_SECRET_KEY` (test/live)
+  - `STRIPE_WEBHOOK_SECRET` (if using webhooks)
+- PayPal:
+  - `PAYPAL_CLIENT_ID` (sandbox/live)
+  - `PAYPAL_CLIENT_SECRET` (sandbox/live)
+  - `PAYPAL_BASE_URL` (default sandbox: `https://api-m.sandbox.paypal.com`)
 
 Notes:
 - Extra keys in `.env` are ignored by design (we use Pydantic v2 with `extra="ignore"`). This allows keeping `.env.example` more comprehensive than current code.
@@ -258,6 +327,7 @@ Notes:
 2) Render a form targeting `redirect.url` with hidden input `token_ws` = token.
 3) Auto-submit the form (or present a pay button).
 4) Handle the 303 redirect at your frontend `success_url`/`failure_url`/`cancel_url` and show a status page.
+   - For PayPal, set `cancel_url` to the API return endpoint with `?paypal_cancel=1` so the API can mark the payment as canceled and then redirect to your front.
 
 Minimal form example:
 
@@ -282,6 +352,19 @@ Minimal form example:
 - Import the included collection: `ninja-payments-api.postman_collection.json`.
 - Or import the live OpenAPI spec from the running service: `http://localhost:8000/openapi.json`.
 
+## Provider Setup Notes
+
+Stripe (optional)
+- Create or use a Stripe account in a supported country; enable Test mode.
+- Get `sk_test_…` from Developers → API keys and set `STRIPE_SECRET_KEY`.
+- For webhooks in local dev: `stripe listen --forward-to http://localhost:8000/api/payments/stripe/webhook` and set `STRIPE_WEBHOOK_SECRET`.
+
+PayPal (recommended for countries without Stripe)
+- Go to https://developer.paypal.com/, create a Developer account and a Sandbox app.
+- Get your Sandbox `Client ID` and `Secret` and set `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`.
+- Keep `PAYPAL_BASE_URL` as `https://api-m.sandbox.paypal.com` for sandbox testing.
+- In requests, use `provider: "paypal"`. The API will return an approval URL; the frontend redirects there, and PayPal returns to your API `return_url` (commit) or to `cancel_url` (we recommend `.../api/payments/tbk/return?paypal_cancel=1`).
+
 ## Demo Frontend
 
 A minimal static frontend is included under `frontend/` to simulate the full flow end‑to‑end.
@@ -296,5 +379,6 @@ python -m http.server 3000 -d frontend
 
 Notes:
 - The API has permissive CORS for development.
-- Use the form to set API base (`http://localhost:8000`) and the bearer token.
+- Use the form to set API base (`http://localhost:8000`), bearer token, and select the provider (Webpay or Stripe).
 - On create, the page will auto‑POST the token to Webpay and you’ll be redirected back through the API to `success.html`, `failure.html` or `canceled.html` with `status` and `buy_order` in the query string.
+  - For Stripe, the frontend will navigate via GET to the returned Checkout URL (provider support on the backend is pending in this repo).

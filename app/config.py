@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     # Default return URL if not provided via env
     return_url: str = "http://localhost:8000/api/payments/tbk/return"
 
+    # Stripe config
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+
+    # PayPal config
+    paypal_client_id: str = ""
+    paypal_client_secret: str = ""
+    paypal_base_url: str = "https://api-m.sandbox.paypal.com"
+
     # Pydantic v2 settings config
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -27,6 +27,7 @@ class JsonFormatter(logging.Formatter):
             "event",
             "currency",
             "amount",
+            "provider",
         )
         for field in extra_fields:
             if hasattr(record, field):

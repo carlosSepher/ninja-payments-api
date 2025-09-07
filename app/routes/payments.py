@@ -35,10 +35,15 @@ async def create_payment(
             "buy_order": request.buy_order,
             "amount": request.amount,
             "currency": request.currency.value,
+            "provider": (request.provider.value if getattr(request, "provider", None) else None),
             "idempotency_key": idempotency_key or "",
         },
     )
-    result = await _service.create_payment(request, idempotency_key)
+    try:
+        result = await _service.create_payment(request, idempotency_key)
+    except ValueError as exc:
+        # Surface business errors and unknown provider as 400
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     logger.info(
         "create_payment responded",
         extra={
@@ -47,6 +52,7 @@ async def create_payment(
             "buy_order": request.buy_order,
             "status": result.status.value,
             "token": result.redirect.token,
+            "provider": (request.provider.value if getattr(request, "provider", None) else None),
         },
     )
     return result
@@ -56,8 +62,10 @@ async def create_payment(
 async def tbk_return(request: Request) -> PaymentStatusResponse:
     form = await request.form() if request.method == "POST" else {}
     params = request.query_params
-    token = form.get("token_ws") or params.get("token_ws")
+    token_ws = form.get("token_ws") or params.get("token_ws")
+    token = token_ws or form.get("token") or params.get("token")
     tbk_token = form.get("TBK_TOKEN") or params.get("TBK_TOKEN")
+    paypal_cancel = form.get("paypal_cancel") or params.get("paypal_cancel")
     logger.info(
         "tbk_return received",
         extra={
@@ -66,6 +74,37 @@ async def tbk_return(request: Request) -> PaymentStatusResponse:
             "token": str(token or tbk_token or ""),
         },
     )
+    if token and paypal_cancel:
+        # Explicit PayPal cancel flow
+        result = _service.cancel_payment(str(token))
+        payment = _store.get_by_token(str(token))
+        if payment and payment.cancel_url:
+            url = urlparse(payment.cancel_url)
+            q = dict(parse_qsl(url.query))
+            q.update({"status": result.status.value, "buy_order": payment.buy_order})
+            new_query = urlencode(q)
+            redirect_to = urlunparse((url.scheme, url.netloc, url.path, url.params, new_query, url.fragment))
+            logger.info(
+                "tbk_return redirecting (paypal cancel)",
+                extra={
+                    "endpoint": "/api/payments/tbk/return",
+                    "method": request.method,
+                    "buy_order": payment.buy_order,
+                    "status": result.status.value,
+                    "redirect_to": redirect_to,
+                },
+            )
+            return RedirectResponse(redirect_to, status_code=303)
+        logger.info(
+            "tbk_return returning JSON (paypal cancel)",
+            extra={
+                "endpoint": "/api/payments/tbk/return",
+                "method": request.method,
+                "status": result.status.value,
+                "token": str(token),
+            },
+        )
+        return result
     if token:
         result = await _service.commit_payment(str(token))
         # If we have frontend URLs saved for this payment, redirect the browser
