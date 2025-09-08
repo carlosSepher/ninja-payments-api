@@ -261,23 +261,25 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
+  autonumber
   participant F as Frontend Browser
   participant API as ninja-payments-api
   participant ST as Stripe
 
-  F->>API: POST /api/payments provider=stripe
+  F->>API: POST /api/payments (provider=stripe)
   API->>ST: Create Checkout Session
   ST-->>API: {session.url, session.id}
-  API-->>F: {status:PENDING, redirect:{url:session.url, method:GET}}
-  F->>ST: GET session.url Checkout
+  API-->>F: {status: PENDING, redirect: {url: session.url, method: GET}}
+  F->>ST: GET session.url (Checkout)
   alt User completes
-    ST-->>F: 302 to success_url front
+    ST-->>F: 302 to success_url (front)
   else User cancels
-    ST-->>F: 302 to cancel_url front
+    ST-->>F: 302 to cancel_url (front)
   end
+
   opt Webhook recommended
     ST-->>API: checkout.session.completed
-    API: mark AUTHORIZED for the order
+    API->>API: Mark order AUTHORIZED
   end
 ```
 
