@@ -195,6 +195,11 @@ Example redirects:
 3) GET `/health`
 - Simple liveness check. Returns `{ "status": "ok" }`.
 
+4) POST `/api/payments/stripe/webhook`
+- Receives Stripe events, verifies the signature, and updates the payment state based on the Checkout Session id.
+- Use for production-grade confirmation of Stripe payments.
+- Local dev: `stripe listen --forward-to http://localhost:8000/api/payments/stripe/webhook` and set `STRIPE_WEBHOOK_SECRET`.
+
 ### Sequence Diagrams
 
 #### Webpay (Transbank)
@@ -282,6 +287,13 @@ sequenceDiagram
     API->>API: Mark order AUTHORIZED
   end
 ```
+
+Notes for Stripe Checkout
+- The browser returns directly to your `success_url`/`cancel_url` (the API is not in that redirect), so your page will not receive `status` or `buy_order` via query params from the API like Webpay/PayPal.
+- Recommended success URL: include the placeholder `{CHECKOUT_SESSION_ID}` so the frontend can read the Session id if needed, e.g. `http://localhost:3000/success.html?session_id={CHECKOUT_SESSION_ID}`.
+- To query server state from the success page (optional): call `GET /api/payments/tbk/return?token=<session_id>`. The API will poll Stripe for the session status and return `{ "status": "AUTHORIZED|FAILED" }` as JSON (in addition to your webhook updating server state).
+  - Tip: add `&format=json` to force a JSON response from the API and avoid browser redirects.
+- In the included demo frontend, Stripe redirects back without `status`/`buy_order`, so those fields appear `null`. This is expected; rely on the webhook for the final truth or implement the optional query described above.
 
 ## Security
 
@@ -381,6 +393,28 @@ python -m http.server 3000 -d frontend
 
 Notes:
 - The API has permissive CORS for development.
-- Use the form to set API base (`http://localhost:8000`), bearer token, and select the provider (Webpay or Stripe).
-- On create, the page will auto‑POST the token to Webpay and you’ll be redirected back through the API to `success.html`, `failure.html` or `canceled.html` with `status` and `buy_order` in the query string.
-  - For Stripe, the frontend will navigate via GET to the returned Checkout URL (provider support on the backend is pending in this repo).
+- Use the form to set API base (`http://localhost:8000`), bearer token, and select the provider (Webpay/Stripe/PayPal).
+- On create:
+  - Webpay: auto‑POST a Webpay form; return goes through the API, which redirects to `success.html`/`failure.html`/`canceled.html` with `status` and `buy_order`.
+  - Stripe: navega a Checkout y vuelve a `success.html?session_id={...}`; esa página consulta la API para confirmar estado y lo muestra.
+  - PayPal: navega al approve URL y vuelve vía API (commit) o cancel; la API redirige al front con `status` y `buy_order`.
+
+## Troubleshooting
+
+- Stripe success page muestra “Cargando…”
+  - Asegúrate de que `success_url` incluya `?session_id={CHECKOUT_SESSION_ID}`.
+  - La página `success.html` consulta `GET /api/payments/tbk/return?token=<session_id>&format=json` para confirmar el estado.
+  - Prueba rápido: `curl "http://localhost:8000/api/payments/tbk/return?token=cs_test_...&format=json"`.
+  - Revisa que el listener del webhook esté activo y `STRIPE_WEBHOOK_SECRET` configurado; los logs deben mostrar “stripe webhook received” y “commit completed … AUTHORIZED/FAILED”.
+
+- Stripe webhook no llega
+  - `stripe login` y luego `stripe listen --events checkout.session.completed,payment_intent.payment_failed --forward-to http://localhost:8000/api/payments/stripe/webhook`.
+  - Copia `whsec_...` a `.env` y reinicia la API.
+  - Dispara un evento: `stripe trigger checkout.session.completed`.
+
+- PayPal 422 Unprocessable Entity
+  - Usa `currency: "USD"` en Sandbox y un `amount` pequeño (ej. 10).
+  - Verifica `PAYPAL_CLIENT_ID` y `PAYPAL_CLIENT_SECRET`.
+
+- Webpay 401 Unauthorized al crear
+  - El header `Authorization: Bearer …` debe coincidir con `API_BEARER_TOKEN` del `.env`.
