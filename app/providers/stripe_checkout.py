@@ -10,6 +10,7 @@ from app.config import Settings
 from app.domain.models import Payment
 
 from .base import PaymentProvider
+from app.domain.statuses import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -91,3 +92,34 @@ class StripeCheckoutProvider(PaymentProvider):
             return 0
         return -1
 
+    async def status(self, token: str) -> PaymentStatus | None:
+        def _retrieve() -> tuple[str, str]:
+            session = stripe.checkout.Session.retrieve(  # type: ignore[call-arg]
+                token, expand=["payment_intent"]
+            )
+            pi_status = getattr(getattr(session, "payment_intent", None), "status", None)
+            sess_payment_status = getattr(session, "payment_status", None)
+            return (str(pi_status or ""), str(sess_payment_status or ""))
+
+        pi_status, sess_payment_status = await asyncio.to_thread(_retrieve)
+        if pi_status == "succeeded" or sess_payment_status == "paid":
+            return PaymentStatus.AUTHORIZED
+        # Unknown/incomplete; keep as pending
+        return PaymentStatus.PENDING
+
+    async def refund(self, token: str, amount: int | None = None) -> bool:
+        def _refund() -> bool:
+            session = stripe.checkout.Session.retrieve(  # type: ignore[call-arg]
+                token, expand=["payment_intent"]
+            )
+            pi = getattr(session, "payment_intent", None)
+            if not pi:
+                return False
+            args: dict[str, object] = {"payment_intent": pi.id}
+            if amount is not None:
+                args["amount"] = int(amount)
+            refund = stripe.Refund.create(**args)  # type: ignore[arg-type]
+            # status can be 'succeeded' or 'pending'
+            return bool(refund and getattr(refund, "status", "") in {"succeeded", "pending"})
+
+        return await asyncio.to_thread(_refund)

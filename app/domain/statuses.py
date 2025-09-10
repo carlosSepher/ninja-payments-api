@@ -10,3 +10,4 @@ class PaymentStatus(str, Enum):
     AUTHORIZED = "AUTHORIZED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
+    REFUNDED = "REFUNDED"

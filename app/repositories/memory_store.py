@@ -30,3 +30,9 @@ class InMemoryPaymentStore:
         if payment_id:
             return self.by_id.get(payment_id)
         return None
+
+    def list_pending(self) -> list[Payment]:
+        return [p for p in self.by_id.values() if p.status.name == "PENDING"]
+
+    def list_all(self) -> list[Payment]:
+        return list(self.by_id.values())

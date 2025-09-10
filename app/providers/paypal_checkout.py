@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Tuple
+from decimal import Decimal, ROUND_HALF_UP
 
 import httpx
 
@@ -9,6 +10,7 @@ from app.config import Settings
 from app.domain.models import Payment
 
 from .base import PaymentProvider
+from app.domain.statuses import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -105,3 +107,79 @@ class PayPalCheckoutProvider(PaymentProvider):
         if status == "COMPLETED":
             return 0
         return -1
+
+    async def status(self, token: str) -> PaymentStatus | None:
+        access_token = await self._get_access_token()
+        order_url = f"{self.base_url}/v2/checkout/orders/{token}"
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(order_url, headers=headers)
+            if resp.status_code >= 400:
+                logger.info("paypal status failed", extra={"token": token, "response_code": resp.status_code})
+                return None
+            data = resp.json()
+        order_status = str(data.get("status", ""))
+        captures = (
+            (data.get("purchase_units") or [{}])[0]
+            .get("payments", {})
+            .get("captures", [])
+        )
+        # If there are captures with refund markers, prefer that
+        cap_statuses = {str(c.get("status", "")) for c in captures}
+        if any(s in {"REFUNDED", "PARTIALLY_REFUNDED"} for s in cap_statuses):
+            return PaymentStatus.REFUNDED
+        if order_status == "COMPLETED":
+            return PaymentStatus.AUTHORIZED
+        if order_status in {"VOIDED", "CANCELLED"}:
+            return PaymentStatus.CANCELED
+        # CREATED, APPROVED, PAYER_ACTION_REQUIRED -> pending
+        return PaymentStatus.PENDING
+
+    async def refund(self, token: str, amount: int | None = None) -> bool:
+        access_token = await self._get_access_token()
+        # Retrieve order to find capture id
+        order_url = f"{self.base_url}/v2/checkout/orders/{token}"
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient() as client:
+            r1 = await client.get(order_url, headers=headers)
+            if r1.status_code >= 400:
+                logger.info("paypal refund: order fetch failed", extra={"token": token, "response_code": r1.status_code})
+                return False
+            order = r1.json()
+            captures = (
+                (order.get("purchase_units") or [{}])[0]
+                .get("payments", {})
+                .get("captures", [])
+            )
+            if not captures:
+                logger.info("paypal refund: no captures", extra={"token": token})
+                return False
+            # Prefer a COMPLETED capture (latest)
+            completed_caps = [c for c in captures if c.get("status") == "COMPLETED"]
+            cap = (completed_caps[-1] if completed_caps else captures[-1])
+            capture_id = cap.get("id")
+            if not capture_id:
+                return False
+            refund_url = f"{self.base_url}/v2/payments/captures/{capture_id}/refund"
+            body: dict[str, object] = {}
+            if amount is not None:
+                currency = (order.get("purchase_units") or [{}])[0].get("amount", {}).get("currency_code", "USD")
+                zero_decimal = {"CLP", "JPY", "VND", "KRW"}
+                if currency in zero_decimal:
+                    value_str = str(int(amount))
+                else:
+                    value_str = str(Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                body = {"amount": {"currency_code": currency, "value": value_str}}
+            r2 = await client.post(refund_url, headers=headers, json=body)
+            if r2.status_code >= 400:
+                detail = None
+                try:
+                    j = r2.json()
+                    detail = j
+                except Exception:
+                    detail = r2.text
+                logger.info("paypal refund failed", extra={"token": token, "response_code": r2.status_code, "event": str(detail)})
+                return False
+            data = r2.json()
+            status = str(data.get("status", ""))
+            return status in {"COMPLETED", "PENDING"}

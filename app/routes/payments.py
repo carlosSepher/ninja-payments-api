@@ -11,6 +11,14 @@ from app.domain.dtos import (
     PaymentCreateRequest,
     PaymentCreateResponse,
     PaymentStatusResponse,
+    PaymentSummary,
+    RefreshRequest,
+    RefreshResult,
+    StatusCheckRequest,
+    StatusCheckResult,
+    RedirectInfo,
+    RefundRequest,
+    RefundResponse,
 )
 from app.repositories.memory_store import InMemoryPaymentStore
 from app.services.payments_service import PaymentsService
@@ -191,6 +199,74 @@ async def tbk_return(request: Request) -> PaymentStatusResponse:
         },
     )
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid return")
+
+
+@router.get("/pending", response_model=list[PaymentSummary], dependencies=[Depends(verify_bearer_token)])
+async def list_pending() -> list[PaymentSummary]:
+    items = _store.list_pending()
+    return [
+        PaymentSummary(
+            id=p.id,
+            buy_order=p.buy_order,
+            amount=p.amount,
+            currency=p.currency,
+            status=p.status,
+            token=p.token,
+            provider=p.provider,
+        )
+        for p in items
+    ]
+
+
+@router.post("/refresh", response_model=RefreshResult, dependencies=[Depends(verify_bearer_token)])
+async def refresh_payments(req: RefreshRequest) -> RefreshResult:
+    results: dict[str, PaymentStatus] = {}
+    updated = 0
+    for t in req.tokens:
+        try:
+            status_val = await _service.refresh_payment(t)
+            results[t] = status_val
+            updated += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.info("refresh error", extra={"token": t, "event": str(exc)})
+    return RefreshResult(updated=updated, results=results)
+
+
+@router.post("/status", response_model=StatusCheckResult, dependencies=[Depends(verify_bearer_token)])
+async def check_status(req: StatusCheckRequest) -> StatusCheckResult:
+    results: dict[str, PaymentStatus | None] = {}
+    for t in req.tokens:
+        try:
+            status_val = await _service.status_payment(t)
+            results[t] = status_val
+        except Exception as exc:  # noqa: BLE001
+            logger.info("status error", extra={"token": t, "event": str(exc)})
+            results[t] = None
+    return StatusCheckResult(results=results)
+
+
+@router.get("/redirect", response_model=RedirectInfo, dependencies=[Depends(verify_bearer_token)])
+async def get_redirect(token: str) -> RedirectInfo:
+    """Return the stored redirect info for a given token to resume checkout.
+
+    - Webpay: method POST with form_fields { token_ws }
+    - Stripe/PayPal: method GET to provider URL
+    """
+    payment = _store.get_by_token(token)
+    if not payment or not payment.redirect_url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown token")
+    if (payment.provider or settings.provider) in {"webpay", "transbank"}:
+        return RedirectInfo(url=payment.redirect_url, token=token, method="POST", form_fields={"token_ws": token})
+    return RedirectInfo(url=payment.redirect_url, token=token, method="GET", form_fields={})
+
+
+@router.post("/refund", response_model=RefundResponse, dependencies=[Depends(verify_bearer_token)])
+async def refund_payment(req: RefundRequest) -> RefundResponse:
+    try:
+        status_val = await _service.refund(req.token, req.amount)
+        return RefundResponse(status=status_val)
+    except ValueError as exc:  # unknown token
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post("/stripe/webhook")

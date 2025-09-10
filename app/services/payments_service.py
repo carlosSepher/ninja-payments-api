@@ -7,6 +7,7 @@ from app.domain.dtos import (
     PaymentCreateResponse,
     PaymentStatusResponse,
     RedirectInfo,
+    RefreshResult,
 )
 from app.domain.enums import Currency
 from app.domain.models import Payment
@@ -134,3 +135,57 @@ class PaymentsService:
             extra={"buy_order": payment.buy_order, "token": token, "status": payment.status.value},
         )
         return PaymentStatusResponse(status=payment.status)
+
+    async def refresh_payment(self, token: str) -> PaymentStatus:
+        """Check current status without forcing failures when possible.
+
+        - Webpay: commits (finalizes) and maps to AUTHORIZED/FAILED.
+        - Stripe: returns AUTHORIZED if paid else keeps PENDING.
+        - PayPal: returns AUTHORIZED if COMPLETED, CANCELED if voided, otherwise PENDING.
+        """
+        payment = self.store.get_by_token(token)
+        if not payment:
+            raise ValueError("Unknown token")
+        provider_name = payment.provider or self.settings.provider
+        provider = get_provider_by_name(self.settings, provider_name)
+        if provider_name in {"webpay", "transbank"}:
+            code = await provider.commit(token)
+            status = PaymentStatus.AUTHORIZED if code == 0 else PaymentStatus.FAILED
+        else:
+            status = await provider.status(token)
+        if status and status != payment.status:
+            payment.status = status
+            self.logger.info(
+                "payment refreshed",
+                extra={"buy_order": payment.buy_order, "token": token, "status": payment.status.value},
+            )
+        return payment.status
+
+    async def status_payment(self, token: str) -> PaymentStatus | None:
+        """Check current provider-reported status without mutating local store."""
+        payment = self.store.get_by_token(token)
+        if not payment:
+            raise ValueError("Unknown token")
+        provider_name = payment.provider or self.settings.provider
+        provider = get_provider_by_name(self.settings, provider_name)
+        return await provider.status(token)
+
+    async def refund(self, token: str, amount: int | None = None) -> PaymentStatus:
+        payment = self.store.get_by_token(token)
+        if not payment:
+            raise ValueError("Unknown token")
+        provider_name = payment.provider or self.settings.provider
+        provider = get_provider_by_name(self.settings, provider_name)
+        ok = await provider.refund(token, amount)
+        if ok:
+            payment.status = PaymentStatus.REFUNDED
+            self.logger.info(
+                "refund completed",
+                extra={"buy_order": payment.buy_order, "token": token, "status": payment.status.value, "provider": provider_name},
+            )
+        else:
+            self.logger.info(
+                "refund failed",
+                extra={"buy_order": payment.buy_order, "token": token, "provider": provider_name},
+            )
+        return payment.status

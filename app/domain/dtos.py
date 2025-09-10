@@ -51,3 +51,39 @@ class PaymentStatusResponse(BaseModel):
     """Response describing the status of a payment."""
 
     status: PaymentStatus
+
+
+class PaymentSummary(BaseModel):
+    id: str
+    buy_order: str
+    amount: int
+    currency: Currency
+    status: PaymentStatus
+    token: str | None = None
+    provider: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    tokens: list[str]
+
+
+class RefreshResult(BaseModel):
+    updated: int
+    results: dict[str, PaymentStatus]
+
+
+class StatusCheckRequest(BaseModel):
+    tokens: list[str]
+
+
+class StatusCheckResult(BaseModel):
+    results: dict[str, PaymentStatus | None]
+
+
+class RefundRequest(BaseModel):
+    token: str
+    amount: int | None = None
+
+
+class RefundResponse(BaseModel):
+    status: PaymentStatus

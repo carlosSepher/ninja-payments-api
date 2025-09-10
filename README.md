@@ -107,6 +107,7 @@ classDiagram
     AUTHORIZED
     FAILED
     CANCELED
+    REFUNDED
   }
   Payment --> PaymentStatus
 ```
@@ -119,6 +120,7 @@ stateDiagram-v2
   PENDING --> AUTHORIZED: commit response_code == 0
   PENDING --> FAILED: commit response_code != 0
   PENDING --> CANCELED: TBK_TOKEN cancel
+  AUTHORIZED --> REFUNDED: refund
 ```
 
 ## Endpoints
@@ -199,6 +201,35 @@ Example redirects:
 - Receives Stripe events, verifies the signature, and updates the payment state based on the Checkout Session id.
 - Use for production-grade confirmation of Stripe payments.
 - Local dev: `stripe listen --forward-to http://localhost:8000/api/payments/stripe/webhook` and set `STRIPE_WEBHOOK_SECRET`.
+
+5) GET `/api/payments/pending`
+- Returns a list of pending transactions (in-memory store) with minimal fields.
+- Secured with Bearer token.
+
+6) POST `/api/payments/refresh`
+- Body: `{ "tokens": ["..."] }`
+- For each token, queries the provider for read-only status when possible (Stripe/PayPal) and updates state. For Webpay, performs a commit to finalize.
+- Returns `{ updated: n, results: { token: status } }`.
+
+7) POST `/api/payments/status`
+- Body: `{ "tokens": ["..."] }`
+- Read-only status check. Returns provider-reported statuses without mutating the in-memory store. Values can be `AUTHORIZED`, `FAILED`, `CANCELED`, `PENDING`, or `null` if unknown/unavailable.
+
+8) POST `/api/payments/refund`
+- Auth: Bearer
+- Body: `{ "token": "...", "amount": <int|null> }`
+- Issues a refund with the provider associated to the token.
+  - Stripe: refunds the PaymentIntent (amount in minor units for decimal currencies; zero-decimal for CLP). If omitted, full refund.
+  - PayPal: refunds the latest capture of the Order (amount in major units; Sandbox typically USD). If omitted, full refund.
+  - Webpay: not implemented.
+- Response: `{ "status": "REFUNDED" | current_status }` (the in-memory store is updated to `REFUNDED` on success).
+
+9) GET `/api/payments/redirect`
+- Auth: Bearer
+- Query: `?token=...`
+- Returns the redirect information to resume a pending checkout flow:
+  - Webpay: `{ url, token, method: POST, form_fields: { token_ws } }`
+  - Stripe/PayPal: `{ url, token, method: GET }`
 
 ### Sequence Diagrams
 
@@ -295,6 +326,11 @@ Notes for Stripe Checkout
   - Tip: add `&format=json` to force a JSON response from the API and avoid browser redirects.
 - In the included demo frontend, Stripe redirects back without `status`/`buy_order`, so those fields appear `null`. This is expected; rely on the webhook for the final truth or implement the optional query described above.
 
+Refund visibility in status (read-only)
+- PayPal: `/status` inspects captures and returns `REFUNDED` if any capture is refunded/partially refunded.
+- Webpay: `/status` returns `null` (no read-only status); use `/refresh` to finalize or consult your store.
+- Stripe: `/status` currently returns `AUTHORIZED` if paid; refunds may not appear as `REFUNDED` in this check. Use the refund endpoint response or the provider dashboard as source of truth, or extend the provider to inspect PaymentIntent refunds.
+
 ## Security
 
 - Authentication: Bearer token on `POST /api/payments`. Default token is configured via env (see below). Requests without a valid token receive HTTP 401.
@@ -356,10 +392,10 @@ Minimal form example:
 ## Limitations & Next Steps
 
 - Storage is in-memory; states are lost on process restart. For real use, persist to a DB and enforce idempotency with unique constraints.
-- Only currency `CLP` is supported; add validation/mapping if others are needed.
-- Error handling is minimal; some business rule violations raise generic errors. Consider returning domain-specific 4xx codes.
-- Single provider (`transbank`). A factory exists to add more providers.
-- No webhooks. If needed, add an optional `notify_url` and sign webhook requests with an HMAC secret.
+- Currencies: Webpay requires `CLP`; PayPal Sandbox recomienda `USD`; Stripe soporta múltiples (CLP/ USD, etc.).
+- Error handling es mínima; considera errores de dominio 4xx más específicos para producción.
+- Providers: Webpay, Stripe y PayPal incluidos. Otros pueden agregarse vía la factory.
+- Webhooks: Stripe implementado; opcional expandir a PayPal/otros.
 
 ## Postman & OpenAPI
 
@@ -398,6 +434,27 @@ Notes:
   - Webpay: auto‑POST a Webpay form; return goes through the API, which redirects to `success.html`/`failure.html`/`canceled.html` with `status` and `buy_order`.
   - Stripe: navega a Checkout y vuelve a `success.html?session_id={...}`; esa página consulta la API para confirmar estado y lo muestra.
   - PayPal: navega al approve URL y vuelve vía API (commit) o cancel; la API redirige al front con `status` y `buy_order`.
+
+## Reconciler (demo)
+
+Included under `reconciler/`, a tiny polling worker to reconcile pending transactions by asking the API to refresh their state.
+
+Run locally:
+
+```bash
+# in the same venv as the API
+export API_BASE=http://localhost:8000
+export API_TOKEN=dev-token
+export INTERVAL_SECONDS=15
+python -m reconciler.main
+```
+
+How it works:
+- Calls `GET /api/payments/pending` to obtain tokens
+- If `READ_ONLY=1` (default), calls `POST /api/payments/status` and prints current provider statuses without changing local state
+- If `READ_ONLY=0`, calls `POST /api/payments/refresh` to update states (finalizes Webpay)
+- Prints one JSON line with the result on each interval
+
 
 ## Troubleshooting
 

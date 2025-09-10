@@ -13,6 +13,7 @@ from app.config import Settings
 from app.domain.models import Payment
 
 from .base import PaymentProvider
+from app.domain.statuses import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -64,3 +65,21 @@ class TransbankWebpayPlusProvider(PaymentProvider):
             },
         )
         return response_code
+
+    async def status(self, token: str) -> PaymentStatus | None:
+        # Webpay (in this simplified flow) has no read-only status endpoint.
+        # To keep status checks side-effect free, return None here and leave
+        # finalization to the explicit refresh/commit flows.
+        return None
+
+    async def refund(self, token: str, amount: int | None = None) -> bool:
+        """Not implemented for this demo provider.
+
+        Webpay Plus refunds/nullifications require additional flows not covered
+        here. Return False to indicate no refund was executed.
+        """
+        logger.info(
+            "webpay refund not supported",
+            extra={"token": token, "response_code": -1},
+        )
+        return False
