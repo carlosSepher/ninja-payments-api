@@ -10,6 +10,7 @@ from transbank.webpay.webpay_plus.transaction import Transaction  # type: ignore
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from app.main import app
+from app.config import settings
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +41,7 @@ def test_payment_flow() -> None:
         "currency": "CLP",
         "return_url": "http://example.com/return",
     }
-    headers = {"Authorization": "Bearer testtoken", "Idempotency-Key": "123"}
+    headers = {"Authorization": f"Bearer {settings.api_bearer_token}", "Idempotency-Key": "123"}
     response = client.post("/api/payments", json=payload, headers=headers)
     assert response.status_code == 200
     token = response.json()["redirect"]["token"]

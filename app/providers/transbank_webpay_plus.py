@@ -67,19 +67,79 @@ class TransbankWebpayPlusProvider(PaymentProvider):
         return response_code
 
     async def status(self, token: str) -> PaymentStatus | None:
-        # Webpay (in this simplified flow) has no read-only status endpoint.
-        # To keep status checks side-effect free, return None here and leave
-        # finalization to the explicit refresh/commit flows.
-        return None
+        """Read-only status using Webpay SDK.
+
+        Maps TBK status strings to our PaymentStatus without side effects.
+        """
+        try:
+            result = await asyncio.to_thread(self.transaction.status, token)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "webpay status error",
+                extra={"token": token, "event": str(exc)},
+            )
+            return None
+
+        tbk_status = str(result.get("status", "") or "").upper()
+        response_code = result.get("response_code", None)
+
+        mapping: dict[str, PaymentStatus] = {
+            "AUTHORIZED": PaymentStatus.AUTHORIZED,
+            "FAILED": PaymentStatus.FAILED,
+            # When a transaction is reversed/nullified, treat as REFUNDED
+            "REVERSED": PaymentStatus.REFUNDED,
+            "NULLIFIED": PaymentStatus.REFUNDED,
+            # Transactions still in progress
+            "INITIALIZED": PaymentStatus.PENDING,
+        }
+        mapped = mapping.get(tbk_status)
+        logger.info(
+            "webpay status read",
+            extra={
+                "token": token,
+                "response_code": (response_code if response_code is not None else -1),
+                "status": (mapped.value if mapped else ""),
+            },
+        )
+        return mapped
 
     async def refund(self, token: str, amount: int | None = None) -> bool:
-        """Not implemented for this demo provider.
+        """Issue a refund/nullification for Webpay Plus.
 
-        Webpay Plus refunds/nullifications require additional flows not covered
-        here. Return False to indicate no refund was executed.
+        Uses REST endpoint: POST /transactions/{token}/refunds with JSON { amount }.
+        Consider success when response contains response_code == 0 or a
+        refund type of REVERSED/NULLIFIED.
         """
+        if amount is None or amount <= 0:
+            # Service is expected to default amount; keep provider safe.
+            logger.info(
+                "refund amount invalid",
+                extra={"token": token, "amount": amount, "response_code": -1},
+            )
+            return False
+
+        url = f"{self.settings.tbk_host}{self.settings.tbk_api_base}/transactions/{token}/refunds"
+        headers = {
+            "Tbk-Api-Key-Id": self.settings.tbk_api_key_id,
+            "Tbk-Api-Key-Secret": self.settings.tbk_api_key_secret,
+            "Content-Type": "application/json",
+        }
+        payload = {"amount": int(amount)}
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+        data = resp.json()
+        response_code = data.get("response_code")
+        refund_type = data.get("type")
+        ok = (response_code == 0) or (refund_type in {"REVERSED", "NULLIFIED"})
         logger.info(
-            "webpay refund not supported",
-            extra={"token": token, "response_code": -1},
+            "webpay refund executed",
+            extra={
+                "token": token,
+                "amount": amount,
+                "response_code": (response_code if response_code is not None else -1),
+                "refund_type": str(refund_type or ""),
+                "accepted": ok,
+            },
         )
-        return False
+        return bool(ok)

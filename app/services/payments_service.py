@@ -176,6 +176,9 @@ class PaymentsService:
             raise ValueError("Unknown token")
         provider_name = payment.provider or self.settings.provider
         provider = get_provider_by_name(self.settings, provider_name)
+        # For Webpay, default to full refund when amount is omitted
+        if provider_name in {"webpay", "transbank"} and (amount is None):
+            amount = payment.amount
         ok = await provider.refund(token, amount)
         if ok:
             payment.status = PaymentStatus.REFUNDED

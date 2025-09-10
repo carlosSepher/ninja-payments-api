@@ -214,6 +214,7 @@ Example redirects:
 7) POST `/api/payments/status`
 - Body: `{ "tokens": ["..."] }`
 - Read-only status check. Returns provider-reported statuses without mutating the in-memory store. Values can be `AUTHORIZED`, `FAILED`, `CANCELED`, `PENDING`, or `null` if unknown/unavailable.
+  - Webpay: usa `Transaction.status(token)` del SDK y mapea a `AUTHORIZED/FAILED/REFUNDED/PENDING` sin efectos colaterales.
 
 8) POST `/api/payments/refund`
 - Auth: Bearer
@@ -221,7 +222,7 @@ Example redirects:
 - Issues a refund with the provider associated to the token.
   - Stripe: refunds the PaymentIntent (amount in minor units for decimal currencies; zero-decimal for CLP). If omitted, full refund.
   - PayPal: refunds the latest capture of the Order (amount in major units; Sandbox typically USD). If omitted, full refund.
-  - Webpay: not implemented.
+  - Webpay: refunds/nullifications via REST (amount in CLP). If omitted, defaults to full refund of the original amount.
 - Response: `{ "status": "REFUNDED" | current_status }` (the in-memory store is updated to `REFUNDED` on success).
 
 9) GET `/api/payments/redirect`
@@ -327,9 +328,9 @@ Notes for Stripe Checkout
 - In the included demo frontend, Stripe redirects back without `status`/`buy_order`, so those fields appear `null`. This is expected; rely on the webhook for the final truth or implement the optional query described above.
 
 Refund visibility in status (read-only)
-- PayPal: `/status` inspects captures and returns `REFUNDED` if any capture is refunded/partially refunded.
-- Webpay: `/status` returns `null` (no read-only status); use `/refresh` to finalize or consult your store.
-- Stripe: `/status` currently returns `AUTHORIZED` if paid; refunds may not appear as `REFUNDED` in this check. Use the refund endpoint response or the provider dashboard as source of truth, or extend the provider to inspect PaymentIntent refunds.
+- PayPal: `/status` inspecciona las captures y devuelve `REFUNDED` si alguna está refund/partially refunded.
+- Webpay: `/status` consulta el SDK; si TBK reporta `REVERSED`/`NULLIFIED`, mapeamos a `REFUNDED`.
+- Stripe: `/status` actualmente devuelve `AUTHORIZED` si pagado; los refunds pueden no aparecer como `REFUNDED` aquí. Usa la respuesta del endpoint de refund o el dashboard, o extiende el provider para inspeccionar refunds del PaymentIntent.
 
 ## Security
 
@@ -378,6 +379,10 @@ Notes:
 3) Auto-submit the form (or present a pay button).
 4) Handle the 303 redirect at your frontend `success_url`/`failure_url`/`cancel_url` and show a status page.
    - For PayPal, set `cancel_url` to the API return endpoint with `?paypal_cancel=1` so the API can mark the payment as canceled and then redirect to your front.
+5) If your `success_url` is opened without `?status=...` (e.g., due to a proxy or you opened the page directly), the demo frontend falls back to read status by token:
+   - Reads `npa_token` from `localStorage` (stored at creation time), calls `POST /api/payments/status`.
+   - If it returns `null`, it tries `POST /api/payments/refresh` as a last resort to finalize status.
+   - Requires the same Bearer token saved as `npa_auth`.
 
 Minimal form example:
 
