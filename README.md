@@ -85,6 +85,14 @@ Components:
 - Store: `app/repositories/memory_store.py` keeps state per token in RAM.
 - Config: `app/config.py` (Pydantic v2 settings; extra env vars are ignored).
 
+Code map highlights:
+- App boot/CORS: app/main.py:11
+- Payment routes: app/routes/payments.py:36, app/routes/payments.py:72, app/routes/payments.py:221, app/routes/payments.py:235, app/routes/payments.py:248, app/routes/payments.py:263
+- Service methods: app/services/payments_service.py:28, app/services/payments_service.py:102, app/services/payments_service.py:139, app/services/payments_service.py:164, app/services/payments_service.py:173
+- Webpay provider: app/providers/transbank_webpay_plus.py:31, app/providers/transbank_webpay_plus.py:56, app/providers/transbank_webpay_plus.py:69, app/providers/transbank_webpay_plus.py:106
+- Stripe provider: app/providers/stripe_checkout.py:19, app/providers/stripe_checkout.py:54, app/providers/stripe_checkout.py:95, app/providers/stripe_checkout.py:110
+- PayPal provider: app/providers/paypal_checkout.py:19, app/providers/paypal_checkout.py:88, app/providers/paypal_checkout.py:111, app/providers/paypal_checkout.py:138
+
 ## Domain & Statuses
 
 ```mermaid
@@ -174,6 +182,14 @@ Response (example):
 
 Frontend then renders and auto‑submits a form to `redirect.url` with `token_ws` (Webpay) or navigates via GET (Stripe/PayPal).
 
+Code references:
+- Route definition: app/routes/payments.py:36
+- Service logic (create + idempotency): app/services/payments_service.py:28
+- Provider selection: app/providers/factory.py:19
+- Webpay create (REST): app/providers/transbank_webpay_plus.py:31
+- Stripe create (Checkout Session): app/providers/stripe_checkout.py:19
+- PayPal create (Orders v2): app/providers/paypal_checkout.py:19
+
 2) GET/POST `/api/payments/tbk/return` (Transbank Return)
 - Webpay redirects the user’s browser here with either:
   - `token_ws` when authorized or failed
@@ -194,6 +210,11 @@ Example redirects:
 - `http://localhost:3000/checkout/failure?status=FAILED&buy_order=o-123`
 - `http://localhost:3000/checkout/canceled?status=CANCELED&buy_order=o-123`
 
+Code references:
+- Route definition: app/routes/payments.py:72
+- Commit service: app/services/payments_service.py:102
+- Webpay commit (SDK): app/providers/transbank_webpay_plus.py:56
+
 3) GET `/health`
 - Simple liveness check. Returns `{ "status": "ok" }`.
 
@@ -211,10 +232,46 @@ Example redirects:
 - For each token, queries the provider for read-only status when possible (Stripe/PayPal) and updates state. For Webpay, performs a commit to finalize.
 - Returns `{ updated: n, results: { token: status } }`.
 
+Example request (JSON):
+
+```json
+{ "tokens": ["01ab..."] }
+```
+
+Example response (JSON):
+
+```json
+{ "updated": 1, "results": { "01ab...": "AUTHORIZED" } }
+```
+
+Code references:
+- Route definition: app/routes/payments.py:221
+- Service refresh logic: app/services/payments_service.py:139
+- Webpay commit used for finalize: app/providers/transbank_webpay_plus.py:56
+
 7) POST `/api/payments/status`
 - Body: `{ "tokens": ["..."] }`
 - Read-only status check. Returns provider-reported statuses without mutating the in-memory store. Values can be `AUTHORIZED`, `FAILED`, `CANCELED`, `PENDING`, or `null` if unknown/unavailable.
   - Webpay: usa `Transaction.status(token)` del SDK y mapea a `AUTHORIZED/FAILED/REFUNDED/PENDING` sin efectos colaterales.
+
+Example request (JSON):
+
+```json
+{ "tokens": ["01ab..."] }
+```
+
+Example response (JSON):
+
+```json
+{ "results": { "01ab...": "AUTHORIZED" } }
+```
+
+Code references:
+- Route definition: app/routes/payments.py:235
+- Service read-only status: app/services/payments_service.py:164
+- Webpay status (SDK): app/providers/transbank_webpay_plus.py:69
+- Stripe status (Session/PI): app/providers/stripe_checkout.py:95
+- PayPal status (Orders v2): app/providers/paypal_checkout.py:111
 
 8) POST `/api/payments/refund`
 - Auth: Bearer
@@ -225,12 +282,34 @@ Example redirects:
   - Webpay: refunds/nullifications via REST (amount in CLP). If omitted, defaults to full refund of the original amount.
 - Response: `{ "status": "REFUNDED" | current_status }` (the in-memory store is updated to `REFUNDED` on success).
 
+Example request (JSON):
+
+```json
+{ "token": "01ab...", "amount": 1000 }
+```
+
+Example response (JSON):
+
+```json
+{ "status": "REFUNDED" }
+```
+
+Code references:
+- Route definition: app/routes/payments.py:263
+- Service refund logic (defaults full for TBK): app/services/payments_service.py:173
+- Webpay refund (REST `/transactions/{token}/refunds`): app/providers/transbank_webpay_plus.py:106
+- Stripe refund: app/providers/stripe_checkout.py:110
+- PayPal refund: app/providers/paypal_checkout.py:138
+
 9) GET `/api/payments/redirect`
 - Auth: Bearer
 - Query: `?token=...`
 - Returns the redirect information to resume a pending checkout flow:
   - Webpay: `{ url, token, method: POST, form_fields: { token_ws } }`
   - Stripe/PayPal: `{ url, token, method: GET }`
+
+Code references:
+- Route definition: app/routes/payments.py:248
 
 ### Sequence Diagrams
 
@@ -325,7 +404,7 @@ Notes for Stripe Checkout
 - Recommended success URL: include the placeholder `{CHECKOUT_SESSION_ID}` so the frontend can read the Session id if needed, e.g. `http://localhost:3000/success.html?session_id={CHECKOUT_SESSION_ID}`.
 - To query server state from the success page (optional): call `GET /api/payments/tbk/return?token=<session_id>`. The API will poll Stripe for the session status and return `{ "status": "AUTHORIZED|FAILED" }` as JSON (in addition to your webhook updating server state).
   - Tip: add `&format=json` to force a JSON response from the API and avoid browser redirects.
-- In the included demo frontend, Stripe redirects back without `status`/`buy_order`, so those fields appear `null`. This is expected; rely on the webhook for the final truth or implement the optional query described above.
+- En la mayoría de integraciones, Stripe redirige sin `status`/`buy_order` en la URL del front. Esto es esperado; confía en el webhook como fuente de verdad y/o implementa la consulta opcional descrita arriba.
 
 Refund visibility in status (read-only)
 - PayPal: `/status` inspecciona las captures y devuelve `REFUNDED` si alguna está refund/partially refunded.
@@ -334,8 +413,9 @@ Refund visibility in status (read-only)
 
 ## Security
 
-- Authentication: Bearer token on `POST /api/payments`. Default token is configured via env (see below). Requests without a valid token receive HTTP 401.
-- Idempotency: optional `Idempotency-Key` header. If the same key is reused and the transaction already exists with a known redirect, the API returns the same `redirect` info and status instead of creating a new transaction.
+- Authentication: Bearer token on `POST /api/payments` and sensitive endpoints. Default token is configured via env (see below). Requests without a valid token receive HTTP 401.
+- Verifier: app/utils/security.py:8
+- Idempotency: optional `Idempotency-Key` header. If the same key is reused and the transaction already exists with a known redirect, the API returns the same `redirect` info and status instead of creating a new transaction. Extractor: app/utils/idempotency.py:8
 - No card or PII data is handled by your API; Webpay handles sensitive data.
 
 ## Configuration
@@ -362,9 +442,9 @@ Notes:
 
 ## Logging
 
-- JSON logs at INFO level (`app/logging.py`).
-- Notable fields: `message`, `buy_order`, `token`, `response_code`.
-- Examples: "transaction created", "transaction committed".
+- JSON logs at INFO level. Formatter: app/logging.py:8
+- Whitelisted fields: `buy_order`, `token`, `response_code`, `status`, `idempotency_key`, `endpoint`, `method`, `redirect_to`, `event`, `currency`, `amount`, `provider` (see app/logging.py:18).
+- Typical messages: "transaction created", "transaction committed", "webpay status read", "webpay refund executed".
 
 ## Testing
 
@@ -379,10 +459,10 @@ Notes:
 3) Auto-submit the form (or present a pay button).
 4) Handle the 303 redirect at your frontend `success_url`/`failure_url`/`cancel_url` and show a status page.
    - For PayPal, set `cancel_url` to the API return endpoint with `?paypal_cancel=1` so the API can mark the payment as canceled and then redirect to your front.
-5) If your `success_url` is opened without `?status=...` (e.g., due to a proxy or you opened the page directly), the demo frontend falls back to read status by token:
-   - Reads `npa_token` from `localStorage` (stored at creation time), calls `POST /api/payments/status`.
-   - If it returns `null`, it tries `POST /api/payments/refresh` as a last resort to finalize status.
-   - Requires the same Bearer token saved as `npa_auth`.
+5) Si tu `success_url` se abre sin `?status=...` (p. ej., por proxy o flujo del PSP), tu frontend puede:
+   - Consultar `POST /api/payments/status` con el identificador de la transacción (token de Webpay, session_id de Stripe, order_id de PayPal).
+   - Si devuelve `null`, como alternativa llamar `POST /api/payments/refresh` para finalizar el estado cuando aplique.
+   - Autenticar con el mismo Bearer usado al crear la transacción.
 
 Minimal form example:
 
@@ -420,54 +500,23 @@ PayPal (recommended for countries without Stripe)
 - Keep `PAYPAL_BASE_URL` as `https://api-m.sandbox.paypal.com` for sandbox testing.
 - In requests, use `provider: "paypal"`. The API will return an approval URL; the frontend redirects there, and PayPal returns to your API `return_url` (commit) or to `cancel_url` (we recommend `.../api/payments/tbk/return?paypal_cancel=1`).
 
-## Demo Frontend
+## Repository Scope
 
-A minimal static frontend is included under `frontend/` to simulate the full flow end‑to‑end.
-
-Run locally:
-
-```bash
-# in the repo root, with API running on :8000
-python -m http.server 3000 -d frontend
-# open http://localhost:3000 in your browser
-```
+This repository contains only the backend Payment API logic: creating transactions, communicating with PSPs (Webpay/Stripe/PayPal), handling the return/commit, status queries, refresh, and refunds. Any demo frontend or reconciliation workers should live in separate repositories.
 
 Notes:
-- The API has permissive CORS for development.
-- Use the form to set API base (`http://localhost:8000`), bearer token, and select the provider (Webpay/Stripe/PayPal).
-- On create:
-  - Webpay: auto‑POST a Webpay form; return goes through the API, which redirects to `success.html`/`failure.html`/`canceled.html` with `status` and `buy_order`.
-  - Stripe: navega a Checkout y vuelve a `success.html?session_id={...}`; esa página consulta la API para confirmar estado y lo muestra.
-  - PayPal: navega al approve URL y vuelve vía API (commit) o cancel; la API redirige al front con `status` y `buy_order`.
-
-## Reconciler (demo)
-
-Included under `reconciler/`, a tiny polling worker to reconcile pending transactions by asking the API to refresh their state.
-
-Run locally:
-
-```bash
-# in the same venv as the API
-export API_BASE=http://localhost:8000
-export API_TOKEN=dev-token
-export INTERVAL_SECONDS=15
-python -m reconciler.main
-```
-
-How it works:
-- Calls `GET /api/payments/pending` to obtain tokens
-- If `READ_ONLY=1` (default), calls `POST /api/payments/status` and prints current provider statuses without changing local state
-- If `READ_ONLY=0`, calls `POST /api/payments/refresh` to update states (finalizes Webpay)
-- Prints one JSON line with the result on each interval
+- The API is CORS-enabled for development.
+- Frontends should implement their own redirect handling and (optionally) polling or webhooks according to each provider.
+- Reconciliation jobs can consume `GET /api/payments/pending`, `POST /api/payments/status`, and `POST /api/payments/refresh` from an external worker service.
 
 
 ## Troubleshooting
 
-- Stripe success page muestra “Cargando…”
+- Stripe: la página de éxito queda “Cargando…”
   - Asegúrate de que `success_url` incluya `?session_id={CHECKOUT_SESSION_ID}`.
-  - La página `success.html` consulta `GET /api/payments/tbk/return?token=<session_id>&format=json` para confirmar el estado.
+  - Tu front puede consultar `GET /api/payments/tbk/return?token=<session_id>&format=json` o `POST /api/payments/status` para confirmar estado.
   - Prueba rápido: `curl "http://localhost:8000/api/payments/tbk/return?token=cs_test_...&format=json"`.
-  - Revisa que el listener del webhook esté activo y `STRIPE_WEBHOOK_SECRET` configurado; los logs deben mostrar “stripe webhook received” y “commit completed … AUTHORIZED/FAILED”.
+  - Verifica el listener del webhook y `STRIPE_WEBHOOK_SECRET`; los logs deben mostrar “stripe webhook received” y “commit completed … AUTHORIZED/FAILED”.
 
 - Stripe webhook no llega
   - `stripe login` y luego `stripe listen --events checkout.session.completed,payment_intent.payment_failed --forward-to http://localhost:8000/api/payments/stripe/webhook`.
