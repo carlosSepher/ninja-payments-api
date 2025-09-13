@@ -13,17 +13,18 @@ from app.domain.enums import Currency
 from app.domain.models import Payment
 from app.domain.statuses import PaymentStatus
 from app.providers.factory import get_provider, get_provider_by_name
-from app.repositories.memory_store import InMemoryPaymentStore
+from app.repositories.pg_store import PgPaymentStore
 
 
 class PaymentsService:
     """Business logic for payments."""
 
-    def __init__(self, store: InMemoryPaymentStore, cfg: Settings = settings):
+    def __init__(self, store: PgPaymentStore, cfg: Settings = settings):
         self.store = store
         self.settings = cfg
         self.provider = get_provider(cfg)
         self.logger = logging.getLogger(__name__)
+        # DB-backed store is the source of truth now
 
     async def create_payment(
         self, request: PaymentCreateRequest, idempotency_key: str | None
@@ -114,6 +115,16 @@ class PaymentsService:
             payment.status = PaymentStatus.AUTHORIZED
         else:
             payment.status = PaymentStatus.FAILED
+        try:
+            self.store.update_status_by_token(
+                provider=provider_name,
+                token=token,
+                to_status=payment.status,
+                response_code=response_code,
+            )
+        except Exception as db_exc:  # noqa: BLE001
+            self.logger.info("db commit save error", extra={"token": token, "event": str(db_exc)})
+        # DB store reflects status through this service; external reconciler can also update later
         self.logger.info(
             "commit completed",
             extra={
@@ -130,6 +141,14 @@ class PaymentsService:
         if not payment:
             raise ValueError("Unknown token")
         payment.status = PaymentStatus.CANCELED
+        try:
+            self.store.update_status_by_token(
+                provider=payment.provider or self.settings.provider,
+                token=token,
+                to_status=payment.status,
+            )
+        except Exception as db_exc:  # noqa: BLE001
+            self.logger.info("db cancel save error", extra={"token": token, "event": str(db_exc)})
         self.logger.info(
             "payment canceled",
             extra={"buy_order": payment.buy_order, "token": token, "status": payment.status.value},
@@ -182,6 +201,14 @@ class PaymentsService:
         ok = await provider.refund(token, amount)
         if ok:
             payment.status = PaymentStatus.REFUNDED
+            try:
+                self.store.update_status_by_token(
+                    provider=provider_name,
+                    token=token,
+                    to_status=payment.status,
+                )
+            except Exception as db_exc:  # noqa: BLE001
+                self.logger.info("db refund save error", extra={"token": token, "event": str(db_exc)})
             self.logger.info(
                 "refund completed",
                 extra={"buy_order": payment.buy_order, "token": token, "status": payment.status.value, "provider": provider_name},
@@ -191,4 +218,5 @@ class PaymentsService:
                 "refund failed",
                 extra={"buy_order": payment.buy_order, "token": token, "provider": provider_name},
             )
+        # DB updates for refunds can be handled by reconciler/webhooks as needed
         return payment.status

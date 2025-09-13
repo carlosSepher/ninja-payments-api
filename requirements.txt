@@ -8,3 +8,4 @@ ruff
 mypy
 transbank-sdk
 stripe
+psycopg2-binary

@@ -12,23 +12,21 @@ from app.domain.dtos import (
     PaymentCreateResponse,
     PaymentStatusResponse,
     PaymentSummary,
-    RefreshRequest,
-    RefreshResult,
-    StatusCheckRequest,
-    StatusCheckResult,
     RedirectInfo,
     RefundRequest,
     RefundResponse,
 )
-from app.repositories.memory_store import InMemoryPaymentStore
+from app.repositories.pg_store import PgPaymentStore
 from app.services.payments_service import PaymentsService
 from app.utils.idempotency import get_idempotency_key
 from app.utils.security import verify_bearer_token
 from app.config import settings
+from app.domain.statuses import PaymentStatus
+from app.providers.paypal_checkout import PayPalCheckoutProvider
 
 router = APIRouter(prefix="/api/payments")
 
-_store = InMemoryPaymentStore()
+_store = PgPaymentStore()
 _service = PaymentsService(_store)
 logger = logging.getLogger(__name__)
 
@@ -218,31 +216,112 @@ async def list_pending() -> list[PaymentSummary]:
     ]
 
 
-@router.post("/refresh", response_model=RefreshResult, dependencies=[Depends(verify_bearer_token)])
-async def refresh_payments(req: RefreshRequest) -> RefreshResult:
-    results: dict[str, PaymentStatus] = {}
-    updated = 0
-    for t in req.tokens:
-        try:
-            status_val = await _service.refresh_payment(t)
-            results[t] = status_val
-            updated += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.info("refresh error", extra={"token": t, "event": str(exc)})
-    return RefreshResult(updated=updated, results=results)
+@router.post("/paypal/webhook")
+async def paypal_webhook(request: Request) -> Response:
+    """Handle PayPal webhooks with signature verification.
 
+    Primary use: finalize approved orders server-side and reflect refunds.
+    - Verifies signature via PayPal Verify Webhook Signature API.
+    - On CHECKOUT.ORDER.APPROVED: captures the order (commit) to move to AUTHORIZED.
+    - On PAYMENT.CAPTURE.REFUNDED/PARTIALLY_REFUNDED: attempts to mark REFUNDED if related order_id is present.
+    """
+    if not settings.paypal_webhook_id:
+        logger.info(
+            "paypal webhook id missing",
+            extra={"endpoint": "/api/payments/paypal/webhook"},
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="PayPal webhook not configured")
 
-@router.post("/status", response_model=StatusCheckResult, dependencies=[Depends(verify_bearer_token)])
-async def check_status(req: StatusCheckRequest) -> StatusCheckResult:
-    results: dict[str, PaymentStatus | None] = {}
-    for t in req.tokens:
+    raw = await request.body()
+    try:
+        event = request.json() if hasattr(request, "json") else None
+    except Exception:
+        event = None
+    if event is None:
+        import json as _json  # local import to avoid overshadow
         try:
-            status_val = await _service.status_payment(t)
-            results[t] = status_val
+            event = _json.loads(raw.decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
-            logger.info("status error", extra={"token": t, "event": str(exc)})
-            results[t] = None
-    return StatusCheckResult(results=results)
+            logger.info(
+                "paypal webhook invalid json",
+                extra={"endpoint": "/api/payments/paypal/webhook", "event": str(exc)},
+            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook payload")
+
+    headers = request.headers
+    transmission_id = headers.get("PayPal-Transmission-Id")
+    transmission_time = headers.get("PayPal-Transmission-Time")
+    cert_url = headers.get("PayPal-Cert-Url")
+    auth_algo = headers.get("PayPal-Auth-Algo")
+    transmission_sig = headers.get("PayPal-Transmission-Sig")
+    webhook_id = settings.paypal_webhook_id
+
+    # Verify signature
+    provider = PayPalCheckoutProvider(settings)
+    access_token = await provider._get_access_token()  # noqa: SLF001 (intentional internal use)
+    verify_url = f"{provider.base_url}/v1/notifications/verify-webhook-signature"
+    payload = {
+        "transmission_id": transmission_id,
+        "transmission_time": transmission_time,
+        "cert_url": cert_url,
+        "auth_algo": auth_algo,
+        "transmission_sig": transmission_sig,
+        "webhook_id": webhook_id,
+        "webhook_event": event,
+    }
+    async with httpx.AsyncClient() as client:
+        vresp = await client.post(
+            verify_url,
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        try:
+            vdata = vresp.json()
+        except Exception:  # noqa: BLE001
+            vdata = {"verification_status": "FAILURE"}
+
+    if str(vdata.get("verification_status", "")).upper() != "SUCCESS":
+        logger.info(
+            "paypal webhook verification failed",
+            extra={"endpoint": "/api/payments/paypal/webhook", "response_code": vresp.status_code},
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook signature")
+
+    event_type = str(event.get("event_type", ""))
+    resource = event.get("resource", {}) or {}
+    order_id = str(resource.get("id") or "")
+    if not order_id:
+        # Try related ids for capture refund events
+        order_id = str(((resource.get("supplementary_data") or {}).get("related_ids") or {}).get("order_id") or "")
+
+    logger.info(
+        "paypal webhook received",
+        extra={"endpoint": "/api/payments/paypal/webhook", "event": event_type, "token": order_id},
+    )
+
+    # Handle primary event: approved order -> capture (commit)
+    if event_type.upper() == "CHECKOUT.ORDER.APPROVED" and order_id:
+        try:
+            await _service.commit_payment(order_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "paypal webhook commit error",
+                extra={"endpoint": "/api/payments/paypal/webhook", "event": str(exc)},
+            )
+        return Response(status_code=200)
+
+    # Handle refunds: mark store as REFUNDED if we can relate order_id
+    if event_type.upper() in {"PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.PARTIALLY_REFUNDED"} and order_id:
+        payment = _store.get_by_token(order_id)
+        if payment:
+            payment.status = PaymentStatus.REFUNDED
+            logger.info(
+                "paypal webhook refund applied",
+                extra={"endpoint": "/api/payments/paypal/webhook", "token": order_id, "status": payment.status.value},
+            )
+        return Response(status_code=200)
+
+    return Response(status_code=200)
 
 
 @router.get("/redirect", response_model=RedirectInfo, dependencies=[Depends(verify_bearer_token)])

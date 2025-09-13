@@ -1,6 +1,6 @@
 # ninja-payments-api
 
-FastAPI service exposing a minimal payments API using Transbank Webpay Plus.
+FastAPI service exposing a minimal payments API using Transbank Webpay Plus, persisting all transactions in PostgreSQL (raw SQL via psycopg2).
 
 ## Setup
 
@@ -82,8 +82,29 @@ Components:
 - Routes: `app/routes/health.py`, `app/routes/payments.py`.
 - Service: `app/services/payments_service.py` contains business rules.
 - Provider: `app/providers/` contains provider implementations (Webpay, Stripe, PayPal).
-- Store: `app/repositories/memory_store.py` keeps state per token in RAM.
+- Store (DB): `app/repositories/pg_store.py` persists transactions in PostgreSQL (psycopg2, raw SQL).
 - Config: `app/config.py` (Pydantic v2 settings; extra env vars are ignored).
+
+## Database Usage
+
+Schema lives under the `payments` schema (see `db/schema.sql`). Tables and purpose:
+- `payment_order`: one business order per `buy_order` (UNIQUE). Supports multiple `payment` attempts, even across providers. Created/upserted on create; can be summarized later for dashboards (`OPEN/COMPLETED/CANCELED/EXPIRED/PARTIAL`).
+- `payment`: one row per payment attempt. Inserted on create with `status=PENDING`, `provider`, `token`, redirect URLs, and optional `idempotency_key`. Updated on commit/cancel/refund by token to reflect final status.
+- `payment_state_history`: append-only history of state transitions for audits. Filled automatically by triggers when `payment.status` changes; useful for traceability and dashboards.
+- `provider_event_log`: optional IO log of calls to/from PSPs (request/response). Recommended for deep troubleshooting; hook around create/commit/refund/webhooks.
+- `webhook_inbox`: inbox for PSP webhooks. Stores verified payloads and processing status (Stripe/PayPal). Used by webhook handlers to relate events to a `payment`.
+- `refund`: records refund/nullification operations with amount and outcome. The API executes refunds via providers and can persist results here; reconciler/reporting can consume it.
+- `status_check`: reserved for an external reconciler that performs polling or periodic reads. This API does not expose polling endpoints; the reconciler can write here and update `payment.status` when needed.
+- `dispute`: reserved for chargebacks/disputes post-clearing. Not used directly in this API.
+- `settlement_batch` / `settlement_item`: optional ingestion of clearing/settlement files, linking rows to `payment` when possible. For reconciliation/reporting services.
+- `provider_account`: PSP account metadata (e.g., Webpay commerce code) and environment. Useful for multi-account setups.
+
+How the API uses the DB (high level):
+- Create (POST `/api/payments`): upsert `payment_order` by `buy_order`; insert `payment` (PENDING) with provider/token/redirect. Returns redirect info to the client.
+- Return/commit (GET/POST `/api/payments/tbk/return`): calls provider commit; updates `payment.status` by token to `AUTHORIZED` or `FAILED`.
+- Cancel (TBK_TOKEN/PayPal cancel): updates `payment.status` to `CANCELED` by token.
+- Refund (POST `/api/payments/refund`): executes provider refund; on success updates `payment.status` to `REFUNDED` (and can record a row in `refund`).
+- Pending (GET `/api/payments/pending`): reads `payment` where `status='PENDING'` for quick inspection.
 
 Code map highlights:
 - App boot/CORS: app/main.py:11
@@ -224,56 +245,9 @@ Code references:
 - Local dev: `stripe listen --forward-to http://localhost:8000/api/payments/stripe/webhook` and set `STRIPE_WEBHOOK_SECRET`.
 
 5) GET `/api/payments/pending`
-- Returns a list of pending transactions (in-memory store) with minimal fields.
+- Returns a list of pending transactions (from PostgreSQL) with minimal fields.
 - Secured with Bearer token.
-
-6) POST `/api/payments/refresh`
-- Body: `{ "tokens": ["..."] }`
-- For each token, queries the provider for read-only status when possible (Stripe/PayPal) and updates state. For Webpay, performs a commit to finalize.
-- Returns `{ updated: n, results: { token: status } }`.
-
-Example request (JSON):
-
-```json
-{ "tokens": ["01ab..."] }
-```
-
-Example response (JSON):
-
-```json
-{ "updated": 1, "results": { "01ab...": "AUTHORIZED" } }
-```
-
-Code references:
-- Route definition: app/routes/payments.py:221
-- Service refresh logic: app/services/payments_service.py:139
-- Webpay commit used for finalize: app/providers/transbank_webpay_plus.py:56
-
-7) POST `/api/payments/status`
-- Body: `{ "tokens": ["..."] }`
-- Read-only status check. Returns provider-reported statuses without mutating the in-memory store. Values can be `AUTHORIZED`, `FAILED`, `CANCELED`, `PENDING`, or `null` if unknown/unavailable.
-  - Webpay: usa `Transaction.status(token)` del SDK y mapea a `AUTHORIZED/FAILED/REFUNDED/PENDING` sin efectos colaterales.
-
-Example request (JSON):
-
-```json
-{ "tokens": ["01ab..."] }
-```
-
-Example response (JSON):
-
-```json
-{ "results": { "01ab...": "AUTHORIZED" } }
-```
-
-Code references:
-- Route definition: app/routes/payments.py:235
-- Service read-only status: app/services/payments_service.py:164
-- Webpay status (SDK): app/providers/transbank_webpay_plus.py:69
-- Stripe status (Session/PI): app/providers/stripe_checkout.py:95
-- PayPal status (Orders v2): app/providers/paypal_checkout.py:111
-
-8) POST `/api/payments/refund`
+6) POST `/api/payments/refund`
 - Auth: Bearer
 - Body: `{ "token": "...", "amount": <int|null> }`
 - Issues a refund with the provider associated to the token.
@@ -301,7 +275,7 @@ Code references:
 - Stripe refund: app/providers/stripe_checkout.py:110
 - PayPal refund: app/providers/paypal_checkout.py:138
 
-9) GET `/api/payments/redirect`
+7) GET `/api/payments/redirect`
 - Auth: Bearer
 - Query: `?token=...`
 - Returns the redirect information to resume a pending checkout flow:
@@ -310,6 +284,14 @@ Code references:
 
 Code references:
 - Route definition: app/routes/payments.py:248
+
+8) POST `/api/payments/paypal/webhook`
+- Verifies signature using PayPal Verify Webhook Signature API.
+- On `CHECKOUT.ORDER.APPROVED`, captures the order (commit) and updates status to `AUTHORIZED`.
+- On `PAYMENT.CAPTURE.REFUNDED` / `PARTIALLY_REFUNDED`, if `order_id` is present in related ids, marks the transaction as `REFUNDED` in-memory.
+
+Code references:
+- Route definition: app/routes/payments.py:219
 
 ### Sequence Diagrams
 
@@ -406,10 +388,10 @@ Notes for Stripe Checkout
   - Tip: add `&format=json` to force a JSON response from the API and avoid browser redirects.
 - En la mayoría de integraciones, Stripe redirige sin `status`/`buy_order` en la URL del front. Esto es esperado; confía en el webhook como fuente de verdad y/o implementa la consulta opcional descrita arriba.
 
-Refund visibility in status (read-only)
-- PayPal: `/status` inspecciona las captures y devuelve `REFUNDED` si alguna está refund/partially refunded.
-- Webpay: `/status` consulta el SDK; si TBK reporta `REVERSED`/`NULLIFIED`, mapeamos a `REFUNDED`.
-- Stripe: `/status` actualmente devuelve `AUTHORIZED` si pagado; los refunds pueden no aparecer como `REFUNDED` aquí. Usa la respuesta del endpoint de refund o el dashboard, o extiende el provider para inspeccionar refunds del PaymentIntent.
+Webhook strategy (source of truth)
+- Stripe: usa el webhook `/api/payments/stripe/webhook` para confirmar finalización de Checkout y eventos posteriores.
+- PayPal: usa `/api/payments/paypal/webhook` para capturar órdenes aprobadas y reflejar reembolsos cuando sea posible.
+- Webpay: no ofrece webhooks públicos; el commit ocurre en el retorno (`/tbk/return`) y las anulaciones vía REST.
 
 ## Security
 
@@ -448,9 +430,8 @@ Notes:
 
 ## Testing
 
-- `pytest` runs a smoke test mocking network calls and the Transbank SDK.
-- No external connectivity is required to run tests.
-- To run: `pytest`.
+- Tests use mocked PSPs. If DB variables are set, ensure PostgreSQL is up (see Docker Compose). To run tests without DB, unset `DB_HOST`.
+- Run: `pytest`.
 
 ## Frontend Integration Tips
 
@@ -459,10 +440,7 @@ Notes:
 3) Auto-submit the form (or present a pay button).
 4) Handle the 303 redirect at your frontend `success_url`/`failure_url`/`cancel_url` and show a status page.
    - For PayPal, set `cancel_url` to the API return endpoint with `?paypal_cancel=1` so the API can mark the payment as canceled and then redirect to your front.
-5) Si tu `success_url` se abre sin `?status=...` (p. ej., por proxy o flujo del PSP), tu frontend puede:
-   - Consultar `POST /api/payments/status` con el identificador de la transacción (token de Webpay, session_id de Stripe, order_id de PayPal).
-   - Si devuelve `null`, como alternativa llamar `POST /api/payments/refresh` para finalizar el estado cuando aplique.
-   - Autenticar con el mismo Bearer usado al crear la transacción.
+5) Configura y confía en webhooks para los flujos asíncronos (Stripe/PayPal). Para Webpay, el commit se realiza en el retorno y el front recibe `status` por query.
 
 Minimal form example:
 
@@ -498,23 +476,24 @@ PayPal (recommended for countries without Stripe)
 - Go to https://developer.paypal.com/, create a Developer account and a Sandbox app.
 - Get your Sandbox `Client ID` and `Secret` and set `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`.
 - Keep `PAYPAL_BASE_URL` as `https://api-m.sandbox.paypal.com` for sandbox testing.
+- Set `PAYPAL_WEBHOOK_ID` with your webhook id to enable signature verification.
 - In requests, use `provider: "paypal"`. The API will return an approval URL; the frontend redirects there, and PayPal returns to your API `return_url` (commit) or to `cancel_url` (we recommend `.../api/payments/tbk/return?paypal_cancel=1`).
 
 ## Repository Scope
 
-This repository contains only the backend Payment API logic: creating transactions, communicating with PSPs (Webpay/Stripe/PayPal), handling the return/commit, status queries, refresh, and refunds. Any demo frontend or reconciliation workers should live in separate repositories.
+This repository contains only the backend Payment API logic: creating transactions, communicating with PSPs (Webpay/Stripe/PayPal), handling the return/commit, webhooks, and refunds. Any demo frontend or reconciliation workers should live in separate repositories.
 
 Notes:
 - The API is CORS-enabled for development.
-- Frontends should implement their own redirect handling and (optionally) polling or webhooks according to each provider.
-- Reconciliation jobs can consume `GET /api/payments/pending`, `POST /api/payments/status`, and `POST /api/payments/refresh` from an external worker service.
+- Frontends should implement their own redirect handling and use provider webhooks (Stripe/PayPal) or the Webpay return commit.
+- Reconciliation jobs should rely on PSP reports/APIs and webhook events; this API does not expose polling endpoints for status.
 
 
 ## Troubleshooting
 
 - Stripe: la página de éxito queda “Cargando…”
   - Asegúrate de que `success_url` incluya `?session_id={CHECKOUT_SESSION_ID}`.
-  - Tu front puede consultar `GET /api/payments/tbk/return?token=<session_id>&format=json` o `POST /api/payments/status` para confirmar estado.
+  - Tu front puede consultar `GET /api/payments/tbk/return?token=<session_id>&format=json` para confirmar estado (opcional) y, sobre todo, configurar el webhook.
   - Prueba rápido: `curl "http://localhost:8000/api/payments/tbk/return?token=cs_test_...&format=json"`.
   - Verifica el listener del webhook y `STRIPE_WEBHOOK_SECRET`; los logs deben mostrar “stripe webhook received” y “commit completed … AUTHORIZED/FAILED”.
 

@@ -26,6 +26,26 @@ class Settings(BaseSettings):
     paypal_client_id: str = ""
     paypal_client_secret: str = ""
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"
+    paypal_webhook_id: str = ""
+
+    # Database (PostgreSQL)
+    db_host: str = ""
+    db_port: int = 5432
+    db_user: str = ""
+    db_password: str = ""
+    db_name: str = ""
+    db_schema: str = "payments"
+
+    @property
+    def db_enabled(self) -> bool:
+        return bool(self.db_host and self.db_user and self.db_name)
+
+    @property
+    def db_dsn(self) -> str:
+        if not self.db_enabled:
+            return ""
+        return f"postgresql+psycopg2://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+    paypal_webhook_id: str = ""  # PayPal Webhook ID for signature verification
 
     # Pydantic v2 settings config
     model_config = SettingsConfigDict(
