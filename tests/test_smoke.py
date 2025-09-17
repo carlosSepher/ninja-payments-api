@@ -17,6 +17,11 @@ from app.config import settings
 def mock_external(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_post(self, url, headers=None, json=None):  # type: ignore[override]
         class Response:
+            def __init__(self) -> None:
+                self.status_code = 200
+                self.headers: dict[str, str] = {}
+                self.text = ""
+
             def raise_for_status(self) -> None:
                 return None
 

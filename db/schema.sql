@@ -42,6 +42,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_status') THEN
     CREATE TYPE payments.order_status AS ENUM ('OPEN','COMPLETED','CANCELED','EXPIRED','PARTIAL');
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'runtime_event_type') THEN
+    CREATE TYPE payments.runtime_event_type AS ENUM ('STARTUP','SHUTDOWN','HEARTBEAT','GREETING','CONFIG_CHECK');
+  END IF;
 END$$;
 
 -- Cuentas de PSP (sin secretos)
@@ -157,6 +160,26 @@ CREATE TABLE IF NOT EXISTS payments.provider_event_log (
 );
 CREATE INDEX IF NOT EXISTS ix_event_log_payment ON payments.provider_event_log(payment_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_event_log_provider ON payments.provider_event_log(provider, created_at DESC);
+
+-- Registro de eventos de runtime (heartbeats, salud, configuración)
+CREATE TABLE IF NOT EXISTS payments.service_runtime_log (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  instance_id     text NOT NULL,
+  host_name       text,
+  process_id      integer,
+  service_version text,
+  git_sha         text,
+  event_type      payments.runtime_event_type NOT NULL,
+  uptime_seconds  bigint,
+  payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
+  recorded_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_service_runtime_log_instance
+  ON payments.service_runtime_log(instance_id, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS ix_service_runtime_log_event_time
+  ON payments.service_runtime_log(event_type, recorded_at DESC);
 
 -- Bandeja de webhooks
 CREATE TABLE IF NOT EXISTS payments.webhook_inbox (
@@ -369,4 +392,3 @@ COMMIT;
 -- - amount_minor usa unidades menores (CLP: zero-decimal). currency ISO-4217 de 3 letras.
 -- - payment_order.buy_order es único (por ahora); múltiples intentos (payment) pueden referenciarlo.
 -- - settlement_* es opcional para carga de archivos de clearing.
-

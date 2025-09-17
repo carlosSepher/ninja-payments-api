@@ -215,6 +215,21 @@ async def list_pending() -> list[PaymentSummary]:
         for p in items
     ]
 
+@router.get("/all", response_model=list[PaymentSummary], dependencies=[Depends(verify_bearer_token)])
+async def list_all() -> list[PaymentSummary]:
+    items = _store.list_all()
+    return [
+        PaymentSummary(
+            id=p.id,
+            buy_order=p.buy_order,
+            amount=p.amount,
+            currency=p.currency,
+            status=p.status,
+            token=p.token,
+            provider=p.provider,
+        )
+        for p in items
+    ]
 
 @router.post("/paypal/webhook")
 async def paypal_webhook(request: Request) -> Response:
@@ -298,6 +313,21 @@ async def paypal_webhook(request: Request) -> Response:
         "paypal webhook received",
         extra={"endpoint": "/api/payments/paypal/webhook", "event": event_type, "token": order_id},
     )
+    try:
+        _store.record_webhook(
+            provider="paypal",
+            event_id=str(event.get("id", "")),
+            event_type=event_type,
+            verification_status="SUCCESS",
+            headers=dict(request.headers),
+            payload=event,  # type: ignore[arg-type]
+            related_token=(order_id or None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "paypal webhook log error",
+            extra={"endpoint": "/api/payments/paypal/webhook", "event": str(exc)},
+        )
 
     # Handle primary event: approved order -> capture (commit)
     if event_type.upper() == "CHECKOUT.ORDER.APPROVED" and order_id:
@@ -397,6 +427,22 @@ async def stripe_webhook(request: Request) -> Response:
         except Exception as exc:  # keep webhook 200 to avoid retries storm during dev
             logger.info(
                 "stripe webhook commit error",
+                extra={"endpoint": "/api/payments/stripe/webhook", "event": str(exc)},
+            )
+        # Record webhook inbox entry
+        try:
+            _store.record_webhook(
+                provider="stripe",
+                event_id=str(event.get("id", "")),
+                event_type=event_type,
+                verification_status="SUCCESS",
+                headers=dict(request.headers),
+                payload=event,  # type: ignore[arg-type]
+                related_token=str(session_id),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "stripe webhook log error",
                 extra={"endpoint": "/api/payments/stripe/webhook", "event": str(exc)},
             )
     return Response(status_code=200)

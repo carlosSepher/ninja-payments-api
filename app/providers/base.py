@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
 
 from app.domain.models import Payment
 from app.domain.statuses import PaymentStatus
@@ -28,11 +30,22 @@ class PaymentProvider(ABC):
         """
 
     @abstractmethod
-    async def refund(self, token: str, amount: int | None = None) -> bool:
+    async def refund(self, token: str, amount: int | None = None) -> ProviderRefundResult:
         """Issue a refund where applicable.
 
         - token: provider-specific token/identifier (e.g., session_id / order_id).
         - amount: optional refund amount. Units follow provider conventions used on create
           (Stripe minor units like cents for USD; zero-decimal for CLP; PayPal major units).
-        Returns True if the refund request was accepted/created.
+        Returns ProviderRefundResult with provider IDs and raw payload when available.
         """
+
+@dataclass
+class ProviderRefundResult:
+    """Normalized result for provider refund attempts."""
+
+    ok: bool
+    amount: int | None = None
+    provider_refund_id: str | None = None
+    status: str | None = None
+    payload: dict[str, Any] | None = None
+    error: str | None = None

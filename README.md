@@ -48,12 +48,12 @@ pytest
 This service exposes a small, opinionated API to create payment transactions against Transbank Webpay Plus (integration environment), handle the browser return from Webpay, and report the final status back to the client. It favors simplicity and clear flows suitable for demos, PoCs, and local development.
 
 Key traits:
-- Minimal endpoints: create payment and handle the return.
-- Real calls to Transbank integration for creation and commit.
+- Minimal endpoints: create payment, handle return/webhooks, refunds and admin lookups.
+- Real calls to Transbank, Stripe and PayPal using providers per PSP.
 - Optional frontend redirects after return (success/failure/cancel).
-- Simple in‑memory store for payment state (ephemeral, dev‑only).
-- Bearer token authentication for the create endpoint.
-- JSON logging for easy parsing.
+- PostgreSQL is the source of truth; every provider interaction and state transition is persisted.
+- Bearer token authentication for the create/list/refund endpoints.
+- JSON logging plus structured provider-call logging for troubleshooting.
 
 ## Architecture
 
@@ -80,39 +80,46 @@ flowchart TD
 Components:
 - App: `app/main.py` wires routers and logging.
 - Routes: `app/routes/health.py`, `app/routes/payments.py`.
-- Service: `app/services/payments_service.py` contains business rules.
-- Provider: `app/providers/` contains provider implementations (Webpay, Stripe, PayPal).
-- Store (DB): `app/repositories/pg_store.py` persists transactions in PostgreSQL (psycopg2, raw SQL).
-- Config: `app/config.py` (Pydantic v2 settings; extra env vars are ignored).
+- Service: `app/services/payments_service.py` contains business rules and orchestrates provider/store operations.
+- Providers: `app/providers/` implement Webpay, Stripe and PayPal (create/commit/status/refund) with detailed IO logging.
+- Store (DB): `app/repositories/pg_store.py` persists transactions, provider events, refunds and webhooks in PostgreSQL.
+- Config: `app/config.py` (Pydantic v2 settings; extra env vars are ignored). Toggle `LOG_PROVIDER_EVENTS` to disable provider-call persistence when needed.
 
 ## Database Usage
 
-Schema lives under the `payments` schema (see `db/schema.sql`). Tables and purpose:
-- `payment_order`: one business order per `buy_order` (UNIQUE). Supports multiple `payment` attempts, even across providers. Created/upserted on create; can be summarized later for dashboards (`OPEN/COMPLETED/CANCELED/EXPIRED/PARTIAL`).
-- `payment`: one row per payment attempt. Inserted on create with `status=PENDING`, `provider`, `token`, redirect URLs, and optional `idempotency_key`. Updated on commit/cancel/refund by token to reflect final status.
-- `payment_state_history`: append-only history of state transitions for audits. Filled automatically by triggers when `payment.status` changes; useful for traceability and dashboards.
-- `provider_event_log`: optional IO log of calls to/from PSPs (request/response). Recommended for deep troubleshooting; hook around create/commit/refund/webhooks.
-- `webhook_inbox`: inbox for PSP webhooks. Stores verified payloads and processing status (Stripe/PayPal). Used by webhook handlers to relate events to a `payment`.
-- `refund`: records refund/nullification operations with amount and outcome. The API executes refunds via providers and can persist results here; reconciler/reporting can consume it.
-- `status_check`: reserved for an external reconciler that performs polling or periodic reads. This API does not expose polling endpoints; the reconciler can write here and update `payment.status` when needed.
-- `dispute`: reserved for chargebacks/disputes post-clearing. Not used directly in this API.
-- `settlement_batch` / `settlement_item`: optional ingestion of clearing/settlement files, linking rows to `payment` when possible. For reconciliation/reporting services.
-- `provider_account`: PSP account metadata (e.g., Webpay commerce code) and environment. Useful for multi-account setups.
+Schema lives under the `payments` schema (see `db/schema.sql`). Key tables:
+- `payment_order`: one business order per `buy_order` (UNIQUE). Upserted on create and reused by every attempt (`payment`). Tracks expected amount/currency and overall order status.
+- `payment`: one row per payment attempt. Contains PSP metadata (`provider`, `token`, redirect URLs, idempotency_key). Updated on commit/cancel/refund to reflect the current status.
+- `payment_state_history`: trigger-driven append-only audit trail for every status transition (created/commit/failed/cancel/refund).
+- `provider_event_log`: detailed record of every outbound call to a PSP (request/response headers, bodies, latency, errors). Filled automatically by the provider classes when `LOG_PROVIDER_EVENTS=true`.
+- `webhook_inbox`: verified webhook payloads (Stripe, PayPal). Keeps headers, payload, verification result and the related payment for replay/debugging.
+- `refund`: every refund attempt we perform is recorded here with amount, PSP refund id, raw payload and status (`REQUESTED`/`SUCCEEDED`/`FAILED`). Populated directly by `PaymentsService.refund`.
+- `service_runtime_log`: runtime events for the API itself (startup, health heartbeats, future uptime pings).
+- `status_check`: reserved for external reconciliers to queue background checks.
+- `dispute`: placeholder for post-clearing disputes/chargebacks.
+- `settlement_batch` / `settlement_item`: optional ingestion for PSP settlement files linked back to payments.
+- `provider_account`: metadata for PSP accounts/environments (commerce codes, etc.).
 
 How the API uses the DB (high level):
-- Create (POST `/api/payments`): upsert `payment_order` by `buy_order`; insert `payment` (PENDING) with provider/token/redirect. Returns redirect info to the client.
-- Return/commit (GET/POST `/api/payments/tbk/return`): calls provider commit; updates `payment.status` by token to `AUTHORIZED` or `FAILED`.
-- Cancel (TBK_TOKEN/PayPal cancel): updates `payment.status` to `CANCELED` by token.
-- Refund (POST `/api/payments/refund`): executes provider refund; on success updates `payment.status` to `REFUNDED` (and can record a row in `refund`).
-- Pending (GET `/api/payments/pending`): reads `payment` where `status='PENDING'` for quick inspection.
+- Create (POST `/api/payments`): upsert `payment_order`; insert `payment` (PENDING); store redirect/token. Provider request/response is written to `provider_event_log`.
+- Return/commit (GET/POST `/api/payments/tbk/return`, Stripe/PayPal webhooks): call provider `commit`, update `payment` + `payment_state_history`, log the provider response and, if applicable, capture the webhook payload.
+- Cancel (TBK_TOKEN/PayPal cancel flag): mark `payment` as `CANCELED` and append to history.
+- Refund (POST `/api/payments/refund`): call provider refund, persist the attempt in `refund`, log the provider interaction and update `payment` to `REFUNDED` when successful.
+- Observability: optional heartbeat routines can insert into `service_runtime_log`; a future reconciler can leverage `status_check`.
 
 Code map highlights:
-- App boot/CORS: app/main.py:11
-- Payment routes: app/routes/payments.py:36, app/routes/payments.py:72, app/routes/payments.py:221, app/routes/payments.py:235, app/routes/payments.py:248, app/routes/payments.py:263
-- Service methods: app/services/payments_service.py:28, app/services/payments_service.py:102, app/services/payments_service.py:139, app/services/payments_service.py:164, app/services/payments_service.py:173
-- Webpay provider: app/providers/transbank_webpay_plus.py:31, app/providers/transbank_webpay_plus.py:56, app/providers/transbank_webpay_plus.py:69, app/providers/transbank_webpay_plus.py:106
-- Stripe provider: app/providers/stripe_checkout.py:19, app/providers/stripe_checkout.py:54, app/providers/stripe_checkout.py:95, app/providers/stripe_checkout.py:110
-- PayPal provider: app/providers/paypal_checkout.py:19, app/providers/paypal_checkout.py:88, app/providers/paypal_checkout.py:111, app/providers/paypal_checkout.py:138
+- App boot/CORS: `app/main.py`
+- Payment routes: `app/routes/payments.py`
+- Service orchestration: `app/services/payments_service.py`
+- Providers: `app/providers/transbank_webpay_plus.py`, `app/providers/stripe_checkout.py`, `app/providers/paypal_checkout.py`
+- Store helpers (payments, refunds, provider logs): `app/repositories/pg_store.py`
+
+## Observability & Webhooks
+
+- Provider logging is enabled by default (`LOG_PROVIDER_EVENTS=true`). Each call captures request/response data, latency and errors in `payments.provider_event_log`.
+- Refund attempts are normalized across PSPs; successful or failed attempts are stored in `payments.refund` with the PSP response payload for auditing.
+- Stripe webhooks: run `stripe listen --events checkout.session.completed,payment_intent.payment_failed --forward-to http://localhost:8000/api/payments/stripe/webhook` when developing locally.
+- PayPal webhooks: configure the webhook endpoint (`/api/payments/paypal/webhook`) in the PayPal developer dashboard or expose the API via tunnel/EC2 to receive sandbox events.
 
 ## Domain & Statuses
 

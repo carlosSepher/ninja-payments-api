@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, Any
 
 from app.db.client import get_conn
 from app.domain.enums import Currency
 from app.domain.models import Payment
 from app.domain.statuses import PaymentStatus
+from psycopg2.extras import Json
 
 
 class PgPaymentStore:
@@ -158,6 +160,35 @@ class PgPaymentStore:
                     items.append(p)
         return items
 
+    def list_all(self) -> list[Payment]:
+        items: list[Payment] = []
+        with get_conn() as conn:
+            if conn is None:
+                return items
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token
+                      FROM payment
+                     ORDER BY created_at DESC
+                     LIMIT 200
+                    """,
+                )
+                for row in cur.fetchall() or []:
+                    pid, buy_order, amount_minor, currency, provider, status, tok = row
+                    p = Payment(
+                        buy_order=str(buy_order),
+                        amount=int(amount_minor),
+                        currency=Currency(str(currency)),
+                        provider=str(provider) if provider else None,
+                    )
+                    p.id = str(pid)
+                    p.status = PaymentStatus(str(status))
+                    p.token = str(tok) if tok else None
+                    items.append(p)
+        return items
+
+
     def update_status_by_token(self, *, provider: str, token: str, to_status: PaymentStatus,
                                response_code: int | None = None, reason: str | None = None,
                                authorization_code: str | None = None) -> None:
@@ -178,6 +209,7 @@ class PgPaymentStore:
                            refunded_at = CASE WHEN %s = 'REFUNDED' THEN NOW() ELSE refunded_at END,
                            updated_at = NOW()
                      WHERE provider = %s AND token = %s
+                     RETURNING payment_order_id
                     """,
                     (
                         to_status.value,
@@ -190,5 +222,161 @@ class PgPaymentStore:
                         to_status.value,
                         provider,
                         token,
+                    ),
+                )
+                row = cur.fetchone()
+                if row and to_status in {PaymentStatus.AUTHORIZED, PaymentStatus.REFUNDED}:
+                    order_id = row[0]
+                    if order_id:
+                        cur.execute(
+                            "UPDATE payment_order SET status='COMPLETED', updated_at=NOW() WHERE id=%s",
+                            (order_id,),
+                        )
+
+    def log_provider_event(
+        self,
+        *,
+        provider: str,
+        operation: str,
+        direction: str,
+        request_url: str | None = None,
+        token: str | None = None,
+        response_status: int | None = None,
+        error_message: str | None = None,
+        latency_ms: int | None = None,
+        request_headers: dict[str, Any] | None = None,
+        request_body: dict[str, Any] | None = None,
+        response_headers: dict[str, Any] | None = None,
+        response_body: dict[str, Any] | None = None,
+        ) -> None:
+        with get_conn() as conn:
+            if conn is None:
+                return
+            with conn.cursor() as cur:
+                pid = None
+                if token:
+                    cur.execute("SELECT id FROM payment WHERE token=%s LIMIT 1", (token,))
+                    r = cur.fetchone()
+                    if r:
+                        pid = r[0]
+                cur.execute(
+                    """
+                    INSERT INTO provider_event_log (
+                        id, payment_id, provider, direction, operation, request_url,
+                        request_headers, request_body,
+                        response_status, response_headers, response_body,
+                        error_message, latency_ms, created_at
+                    ) VALUES (
+                        gen_random_uuid(), %s, %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s, %s,
+                        %s, %s, NOW()
+                    )
+                    """,
+                    (
+                        pid,
+                        provider,
+                        direction,
+                        operation,
+                        request_url,
+                        Json(request_headers or {}),
+                        Json(request_body or {}),
+                        response_status,
+                        Json(response_headers or {}),
+                        Json(response_body or {}),
+                        error_message,
+                        latency_ms,
+                    ),
+                )
+
+    def record_webhook(
+        self,
+        *,
+        provider: str,
+        event_id: str | None,
+        event_type: str | None,
+        verification_status: str = "UNKNOWN",
+        headers: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+        related_token: str | None = None,
+    ) -> None:
+        with get_conn() as conn:
+            if conn is None:
+                return
+            with conn.cursor() as cur:
+                related_payment_id = None
+                if related_token:
+                    cur.execute("SELECT id FROM payment WHERE token=%s LIMIT 1", (related_token,))
+                    r = cur.fetchone()
+                    if r:
+                        related_payment_id = r[0]
+                cur.execute(
+                    """
+                    INSERT INTO webhook_inbox (
+                        id, provider, event_id, event_type, verification_status, headers, payload,
+                        related_payment_id, received_at
+                    ) VALUES (
+                        gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, NOW()
+                    ) ON CONFLICT (provider, event_id) DO NOTHING
+                    """,
+                    (
+                        provider,
+                        event_id,
+                        event_type,
+                        verification_status,
+                        Json(headers or {}),
+                        Json(payload or {}),
+                        related_payment_id,
+                    ),
+                )
+
+    def record_refund(
+        self,
+        *,
+        token: str,
+        provider: str,
+        amount: int | None,
+        status: str,
+        provider_refund_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if amount is None:
+            return
+        with get_conn() as conn:
+            if conn is None:
+                return
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM payment WHERE token=%s LIMIT 1", (token,))
+                row = cur.fetchone()
+                if not row:
+                    return
+                payment_id = row[0]
+                amount_int = int(amount)
+                if amount_int <= 0:
+                    return
+                status_value = (status or "REQUESTED").upper()
+                confirmed_at = None
+                if status_value in {"SUCCEEDED", "COMPLETED"}:
+                    confirmed_at = datetime.now(timezone.utc)
+                cur.execute(
+                    """
+                    INSERT INTO refund (
+                        id, payment_id, provider, amount_minor, status,
+                        provider_refund_id, reason, payload, confirmed_at
+                    ) VALUES (
+                        gen_random_uuid(), %s, %s, %s, %s,
+                        %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        payment_id,
+                        provider,
+                        amount_int,
+                        status_value,
+                        provider_refund_id,
+                        reason,
+                        Json(payload or {}),
+                        confirmed_at,
                     ),
                 )

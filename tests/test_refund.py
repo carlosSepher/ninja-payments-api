@@ -26,6 +26,9 @@ def mock_external(monkeypatch: pytest.MonkeyPatch) -> None:
         class Response:
             def __init__(self, payload: dict[str, object]):
                 self._payload = payload
+                self.status_code = 200
+                self.headers: dict[str, str] = {}
+                self.text = ""
 
             def raise_for_status(self) -> None:
                 return None

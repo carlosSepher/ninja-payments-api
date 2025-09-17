@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_name: str = ""
     db_schema: str = "payments"
+    log_provider_events: bool = True
 
     @property
     def db_enabled(self) -> bool:

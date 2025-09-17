@@ -198,8 +198,43 @@ class PaymentsService:
         # For Webpay, default to full refund when amount is omitted
         if provider_name in {"webpay", "transbank"} and (amount is None):
             amount = payment.amount
-        ok = await provider.refund(token, amount)
-        if ok:
+        result = await provider.refund(token, amount)
+        raw_amount = (
+            result.amount
+            if result.amount is not None
+            else (amount if amount is not None else payment.amount)
+        )
+        refund_amount: int | None
+        if raw_amount is None:
+            refund_amount = None
+        else:
+            try:
+                refund_amount = int(raw_amount)
+            except (TypeError, ValueError):
+                try:
+                    from decimal import Decimal, InvalidOperation  # local import to avoid global dependency
+
+                    refund_amount = int(Decimal(str(raw_amount)))
+                except (InvalidOperation, ValueError):
+                    refund_amount = None
+        if refund_amount is None:
+            fallback_amount = amount if amount is not None else payment.amount
+            refund_amount = int(fallback_amount)
+        refund_status = "SUCCEEDED" if result.ok else "FAILED"
+        try:
+            self.store.record_refund(
+                token=token,
+                provider=provider_name,
+                amount=refund_amount,
+                status=refund_status,
+                provider_refund_id=result.provider_refund_id,
+                payload=result.payload,
+                reason=result.error,
+            )
+        except Exception as db_exc:  # noqa: BLE001
+            self.logger.info("db refund record error", extra={"token": token, "event": str(db_exc)})
+
+        if result.ok:
             payment.status = PaymentStatus.REFUNDED
             try:
                 self.store.update_status_by_token(
