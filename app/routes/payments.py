@@ -44,12 +44,48 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
     metadata = payload.get("metadata") or {}
     payment_intent_id = payload.get("payment_intent") or metadata.get("payment_intent_id")
     token = None
+    logger.info(
+        "stripe refund start",
+        extra={
+            "endpoint": "/api/payments/stripe/webhook",
+            "event": event_type,
+            "payment_intent": str(payment_intent_id or ""),
+            "charge": str(payload.get("charge") or ""),
+            "metadata": metadata,
+        },
+    )
     if payment_intent_id:
         token = _store.get_token_by_payment_intent(str(payment_intent_id))
+        logger.info(
+            "stripe refund lookup by intent",
+            extra={
+                "endpoint": "/api/payments/stripe/webhook",
+                "event": event_type,
+                "payment_intent": str(payment_intent_id or ""),
+                "token": token or "",
+            },
+        )
     if not token:
         buy_order_meta = metadata.get("buy_order") or metadata.get("BUY_ORDER")
+        logger.info(
+            "stripe refund lookup by buy_order",
+            extra={
+                "endpoint": "/api/payments/stripe/webhook",
+                "event": event_type,
+                "buy_order": str(buy_order_meta or ""),
+            },
+        )
         if buy_order_meta:
             token = _store.get_latest_token_by_buy_order(str(buy_order_meta))
+            logger.info(
+                "stripe refund buy_order result",
+                extra={
+                    "endpoint": "/api/payments/stripe/webhook",
+                    "event": event_type,
+                    "buy_order": str(buy_order_meta or ""),
+                    "token": token or "",
+                },
+            )
     if not token:
         logger.info(
             "stripe refund token not found",
@@ -90,6 +126,17 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
         if refund_status
         else ("SUCCEEDED" if event_type == "charge.refunded" else "PENDING")
     )
+    logger.info(
+        "stripe refund recording",
+        extra={
+            "endpoint": "/api/payments/stripe/webhook",
+            "event": event_type,
+            "token": token,
+            "amount_minor": amount_minor,
+            "provider_refund_id": provider_refund_id or "",
+            "status": status_value,
+        },
+    )
     try:
         _store.record_refund(
             token=token,
@@ -118,6 +165,18 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
             should_mark_refunded = amount_minor >= int(payment.amount)
         except (TypeError, ValueError):
             should_mark_refunded = False
+    logger.info(
+        "stripe refund update decision",
+        extra={
+            "endpoint": "/api/payments/stripe/webhook",
+            "event": event_type,
+            "token": token,
+            "mark_refunded": should_mark_refunded,
+            "amount_minor": amount_minor,
+            "payment_amount": getattr(payment, "amount", None) if payment else None,
+            "status_value": status_value,
+        },
+    )
     if should_mark_refunded and payment:
         try:
             _store.update_status_by_token(
