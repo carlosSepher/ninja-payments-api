@@ -121,6 +121,32 @@ Code map highlights:
 - Stripe webhooks: run `stripe listen --events checkout.session.completed,payment_intent.payment_failed --forward-to http://localhost:8000/api/payments/stripe/webhook` when developing locally.
 - PayPal webhooks: configure the webhook endpoint (`/api/payments/paypal/webhook`) in the PayPal developer dashboard or expose the API via tunnel/EC2 to receive sandbox events.
 
+## Managed Postgres (Neon) setup
+
+If you prefer a hosted database instead of running Postgres locally, Neon offers a free tier that works well for development.
+
+1. Create a Neon project at <https://neon.tech>, pick a region close to your stack and accept the default `main` branch/database/user.
+2. From the **Connection Details** panel copy the primary connection string (it looks like `postgresql://user:password@ep-xxxx.neon.tech/neondb`). Neon requires TLS, so append `?sslmode=require` when using `psql` or application DSNs.
+3. Apply the schema once:
+   ```bash
+   export NEON_URL="postgresql://user:password@ep-xxxx.neon.tech/neondb?sslmode=require"
+   psql "$NEON_URL" -f db/schema.sql
+   ```
+4. Update `.env` so the service points at Neon:
+   ```env
+   DB_HOST=ep-xxxx.neon.tech
+   DB_PORT=5432
+   DB_USER=your_user
+   DB_PASSWORD=your_password
+   DB_NAME=neondb
+   DB_SCHEMA=payments
+   LOG_PROVIDER_EVENTS=true
+   ```
+   If you prefer using a single DSN, you can also export `DATABASE_URL=$NEON_URL` and derive the individual fields in `app/config.py`.
+5. Free projects suspend when idle; the first query may take a couple of seconds while Neon resumes. For production or long-running tests consider upgrading the project or disabling auto-suspend in Neon settings.
+
+Once the environment variables are in place, restart the API (`uvicorn`/`gunicorn`) and it will use Neon transparently.
+
 ## Domain & Statuses
 
 ```mermaid

@@ -108,6 +108,7 @@ class StripeCheckoutProvider(PaymentProvider):
                 "session_id": session.id,
                 "payment_status": getattr(session, "payment_status", None),
                 "payment_intent_status": getattr(pi, "status", None),
+                "payment_intent_id": getattr(pi, "id", None),
             }
 
         started = time.monotonic()
@@ -138,6 +139,7 @@ class StripeCheckoutProvider(PaymentProvider):
         )
         pi_status = str(result.get("payment_intent_status") or "")
         sess_payment_status = str(result.get("payment_status") or "")
+        payment_intent_id = str(result.get("payment_intent_id") or "")
         logger.info(
             "stripe session status",
             extra={
@@ -145,6 +147,21 @@ class StripeCheckoutProvider(PaymentProvider):
                 "response_code": 0 if pi_status == "succeeded" or sess_payment_status == "paid" else -1,
             },
         )
+        if payment_intent_id:
+            try:
+                self.store.update_provider_metadata(
+                    provider="stripe",
+                    token=token,
+                    metadata={
+                        "payment_intent_id": payment_intent_id,
+                        "payment_intent_status": pi_status,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "stripe metadata save error",
+                    extra={"token": token, "event": str(exc)},
+                )
         if pi_status == "succeeded" or sess_payment_status == "paid":
             return 0
         return -1

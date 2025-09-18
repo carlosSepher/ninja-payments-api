@@ -307,13 +307,13 @@ BEGIN
     )
     VALUES (
       NEW.id, OLD.status, NEW.status,
-      CASE
+      (CASE
         WHEN NEW.status='AUTHORIZED' THEN 'COMMIT'
         WHEN NEW.status='FAILED'     THEN 'FAILED'
         WHEN NEW.status='CANCELED'   THEN 'CANCEL'
         WHEN NEW.status='REFUNDED'   THEN 'REFUNDED'
         ELSE 'MANUAL_UPDATE'
-      END,
+      END)::payments.event_type,
       COALESCE(NEW.response_code, OLD.response_code),
       COALESCE(NEW.status_reason, OLD.status_reason),
       'SYSTEM', NEW.provider, now()

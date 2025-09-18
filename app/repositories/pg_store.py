@@ -131,6 +131,65 @@ class PgPaymentStore:
                 p.redirect_url = redirect_url
                 return p
 
+    def update_provider_metadata(self, *, provider: str, token: str, metadata: dict[str, Any]) -> None:
+        if not metadata:
+            return
+        with get_conn() as conn:
+            if conn is None:
+                return
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE payment
+                       SET provider_metadata = COALESCE(provider_metadata, '{}'::jsonb) || %s::jsonb,
+                           updated_at = NOW()
+                     WHERE provider = %s AND token = %s
+                    """,
+                    (Json(metadata), provider, token),
+                )
+
+    def get_token_by_payment_intent(self, payment_intent_id: str) -> Optional[str]:
+        if not payment_intent_id:
+            return None
+        with get_conn() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT token
+                      FROM payment
+                     WHERE provider = 'stripe'
+                       AND provider_metadata ->> 'payment_intent_id' = %s
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                    """,
+                    (payment_intent_id,),
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else None
+
+    def get_latest_token_by_buy_order(self, buy_order: str) -> Optional[str]:
+        if not buy_order:
+            return None
+        with get_conn() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT token
+                      FROM payment
+                     WHERE provider = 'stripe'
+                       AND buy_order = %s
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                    """,
+                    (buy_order,),
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else None
+
     def list_pending(self) -> list[Payment]:
         items: list[Payment] = []
         with get_conn() as conn:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import stripe  # type: ignore[import-untyped]
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi import Response
 from fastapi.responses import RedirectResponse
@@ -29,6 +31,120 @@ router = APIRouter(prefix="/api/payments")
 _store = PgPaymentStore()
 _service = PaymentsService(_store)
 logger = logging.getLogger(__name__)
+
+
+STRIPE_REFUND_EVENTS = {
+    "charge.refunded",
+    "charge.refund.updated",
+    "charge.refund.created",
+}
+
+
+def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str | None:
+    metadata = payload.get("metadata") or {}
+    payment_intent_id = payload.get("payment_intent") or metadata.get("payment_intent_id")
+    token = None
+    if payment_intent_id:
+        token = _store.get_token_by_payment_intent(str(payment_intent_id))
+    if not token:
+        buy_order_meta = metadata.get("buy_order") or metadata.get("BUY_ORDER")
+        if buy_order_meta:
+            token = _store.get_latest_token_by_buy_order(str(buy_order_meta))
+    if not token:
+        logger.info(
+            "stripe refund token not found",
+            extra={
+                "endpoint": "/api/payments/stripe/webhook",
+                "event": event_type,
+                "payment_intent": str(payment_intent_id or ""),
+                "buy_order": str(metadata.get("buy_order") or metadata.get("BUY_ORDER") or ""),
+            },
+        )
+        return None
+
+    raw_amount = None
+    provider_refund_id: str | None = None
+    refund_status = str(payload.get("status") or "")
+    if payload.get("object") == "refund":
+        provider_refund_id = str(payload.get("id") or "") or None
+        raw_amount = payload.get("amount")
+    else:
+        raw_amount = payload.get("amount_refunded")
+        refunds = payload.get("refunds") or {}
+        if provider_refund_id is None and isinstance(refunds, dict):
+            data_items = refunds.get("data")
+            if isinstance(data_items, list) and data_items:
+                provider_refund_id = str((data_items[-1] or {}).get("id") or "") or None
+        if not refund_status:
+            refund_status = "succeeded" if event_type == "charge.refunded" else ""
+
+    amount_minor: int | None = None
+    if raw_amount is not None:
+        try:
+            amount_minor = int(raw_amount)
+        except (TypeError, ValueError):
+            amount_minor = None
+
+    status_value = (
+        refund_status.upper()
+        if refund_status
+        else ("SUCCEEDED" if event_type == "charge.refunded" else "PENDING")
+    )
+    try:
+        _store.record_refund(
+            token=token,
+            provider="stripe",
+            amount=amount_minor,
+            status=status_value,
+            provider_refund_id=provider_refund_id,
+            payload=payload,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "stripe refund log error",
+            extra={
+                "endpoint": "/api/payments/stripe/webhook",
+                "event": str(exc),
+                "token": token,
+            },
+        )
+
+    payment = _store.get_by_token(token)
+    should_mark_refunded = False
+    if event_type == "charge.refunded":
+        should_mark_refunded = True
+    elif amount_minor is not None and payment:
+        try:
+            should_mark_refunded = amount_minor >= int(payment.amount)
+        except (TypeError, ValueError):
+            should_mark_refunded = False
+    if should_mark_refunded and payment:
+        try:
+            _store.update_status_by_token(
+                provider="stripe",
+                token=token,
+                to_status=PaymentStatus.REFUNDED,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "stripe refund status update error",
+                extra={
+                    "endpoint": "/api/payments/stripe/webhook",
+                    "event": str(exc),
+                    "token": token,
+                },
+            )
+    logger.info(
+        "stripe refund processed",
+        extra={
+            "endpoint": "/api/payments/stripe/webhook",
+            "event": event_type,
+            "token": token,
+            "refund_amount": amount_minor or 0,
+        },
+    )
+    return token
+
 
 
 @router.post("", response_model=PaymentCreateResponse, dependencies=[Depends(verify_bearer_token)])
@@ -420,6 +536,8 @@ async def stripe_webhook(request: Request) -> Response:
         },
     )
 
+    related_token: str | None = None
+
     if session_id:
         # Delegate to provider commit logic; it will read session status and set AUTHORIZED/FAILED
         try:
@@ -429,20 +547,24 @@ async def stripe_webhook(request: Request) -> Response:
                 "stripe webhook commit error",
                 extra={"endpoint": "/api/payments/stripe/webhook", "event": str(exc)},
             )
-        # Record webhook inbox entry
-        try:
-            _store.record_webhook(
-                provider="stripe",
-                event_id=str(event.get("id", "")),
-                event_type=event_type,
-                verification_status="SUCCESS",
-                headers=dict(request.headers),
-                payload=event,  # type: ignore[arg-type]
-                related_token=str(session_id),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "stripe webhook log error",
-                extra={"endpoint": "/api/payments/stripe/webhook", "event": str(exc)},
-            )
+        related_token = str(session_id)
+    elif event_type in STRIPE_REFUND_EVENTS:
+        related_token = _handle_stripe_refund_event(event_type, data)
+
+    # Record webhook inbox entry for traceability
+    try:
+        _store.record_webhook(
+            provider="stripe",
+            event_id=str(event.get("id", "")),
+            event_type=event_type,
+            verification_status="SUCCESS",
+            headers=dict(request.headers),
+            payload=event,  # type: ignore[arg-type]
+            related_token=related_token,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "stripe webhook log error",
+            extra={"endpoint": "/api/payments/stripe/webhook", "event": str(exc)},
+        )
     return Response(status_code=200)
