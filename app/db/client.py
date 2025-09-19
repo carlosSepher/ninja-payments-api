@@ -30,16 +30,36 @@ def get_conn() -> Iterator[psycopg2.extensions.connection]:
         # DB not configured
         yield None  # type: ignore[misc]
         return
-    conn = _pool.getconn()
+    conn: psycopg2.extensions.connection | None = None
     try:
-        if settings.db_schema:
-            with conn.cursor() as cur:
-                cur.execute(f"SET search_path TO {settings.db_schema}")
+        # Attempt to obtain a healthy connection (retry once on closed connections)
+        for attempt in range(2):
+            conn = _pool.getconn()
+            try:
+                if settings.db_schema:
+                    with conn.cursor() as cur:
+                        cur.execute(f"SET search_path TO {settings.db_schema}")
+                break
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                try:
+                    _pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = None
+                if attempt == 1:
+                    raise
+        if conn is None:
+            yield None  # type: ignore[misc]
+            return
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
     finally:
-        _pool.putconn(conn)
-
+        if conn is not None:
+            _pool.putconn(conn)
