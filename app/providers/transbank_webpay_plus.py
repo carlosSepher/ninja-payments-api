@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from typing import Any, Dict, Tuple
+from uuid import uuid4
 
 import httpx
 from transbank.common.integration_type import IntegrationType  # type: ignore[import-untyped]
@@ -38,9 +39,10 @@ class TransbankWebpayPlusProvider(PaymentProvider):
             "Tbk-Api-Key-Secret": self.settings.tbk_api_key_secret,
             "Content-Type": "application/json",
         }
+        session_id = str(payment.id) if payment.id is not None else uuid4().hex
         payload = {
             "buy_order": payment.buy_order,
-            "session_id": payment.id,
+            "session_id": session_id,
             "amount": payment.amount,
             "return_url": return_url,
         }
@@ -53,9 +55,39 @@ class TransbankWebpayPlusProvider(PaymentProvider):
                 resp = await client.post(url, headers=headers, json=payload)
             response_status = resp.status_code
             response_headers = dict(resp.headers)
-            resp.raise_for_status()
-            data = resp.json()
-            response_body = {"token": data.get("token"), "url": data.get("url")}
+            data_raw: Dict[str, Any] | None = None
+            try:
+                data_raw = resp.json()
+            except Exception:  # noqa: BLE001
+                if resp.text:
+                    data_raw = {"raw": resp.text}
+            response_body = data_raw
+            if resp.is_error:
+                message = None
+                if isinstance(data_raw, dict):
+                    message = (
+                        data_raw.get("detail")
+                        or data_raw.get("error_message")
+                        or data_raw.get("error")
+                        or data_raw.get("message")
+                    )
+                err_msg = message or f"Transbank create failed ({resp.status_code})"
+                latency_ms = int((time.monotonic() - started) * 1000)
+                self._log_event(
+                    operation="CREATE",
+                    request_url=url,
+                    request_headers=self._mask_headers(headers),
+                    request_body=payload,
+                    response_status=response_status,
+                    response_headers=response_headers,
+                    response_body=response_body,
+                    error_message=err_msg,
+                    latency_ms=latency_ms,
+                )
+                raise ValueError(err_msg)
+            data = data_raw or {}
+        except ValueError:
+            raise
         except Exception as exc:  # noqa: BLE001
             latency_ms = int((time.monotonic() - started) * 1000)
             self._log_event(
