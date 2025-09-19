@@ -21,15 +21,20 @@ class PgPaymentStore:
             if conn is None:
                 return
             with conn.cursor() as cur:
-                # Ensure order exists
+                if payment.company_id is None:
+                    raise ValueError("payment.company_id required")
+                # Ensure order exists (per company)
                 cur.execute(
                     """
-                    INSERT INTO payment_order (id, buy_order, environment, currency, amount_expected_minor, status, metadata, created_at, updated_at)
-                    VALUES (gen_random_uuid(), %s, %s, %s, %s, 'OPEN', '{}'::jsonb, NOW(), NOW())
-                    ON CONFLICT (buy_order) DO UPDATE SET updated_at = EXCLUDED.updated_at
+                    INSERT INTO payment_order (buy_order, company_id, environment, currency, amount_expected_minor, status, metadata, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, 'OPEN', '{}'::jsonb, NOW(), NOW())
+                    ON CONFLICT (company_id, buy_order) DO UPDATE
+                        SET currency = EXCLUDED.currency,
+                            amount_expected_minor = EXCLUDED.amount_expected_minor,
+                            updated_at = NOW()
                     RETURNING id
                     """,
-                    (payment.buy_order, 'test', payment.currency.value, payment.amount),
+                    (payment.buy_order, payment.company_id, 'test', payment.currency.value, payment.amount),
                 )
                 row = cur.fetchone()
                 order_id = row[0] if row else None
@@ -37,17 +42,19 @@ class PgPaymentStore:
                 cur.execute(
                     """
                     INSERT INTO payment (
-                        id, payment_order_id, buy_order, amount_minor, currency, provider, environment,
+                        payment_order_id, company_id, buy_order, amount_minor, currency, provider, environment,
                         status, token, redirect_url, return_url, success_url, failure_url, cancel_url,
                         idempotency_key, provider_metadata, context, created_at, updated_at
                     ) VALUES (
-                        gen_random_uuid(), %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s,
                         %s, '{}'::jsonb, '{}'::jsonb, NOW(), NOW()
                     )
+                    RETURNING id
                     """,
                     (
                         order_id,
+                        payment.company_id,
                         payment.buy_order,
                         int(payment.amount),
                         payment.currency.value,
@@ -63,6 +70,9 @@ class PgPaymentStore:
                         idempotency_key,
                     ),
                 )
+                inserted = cur.fetchone()
+                if inserted:
+                    payment.id = int(inserted[0])
 
     def get_by_token(self, token: str) -> Optional[Payment]:
         with get_conn() as conn:
@@ -71,8 +81,8 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT buy_order, amount_minor, currency, provider, status, token, redirect_url,
-                           success_url, failure_url, cancel_url
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
+                           success_url, failure_url, cancel_url, company_id
                       FROM payment
                      WHERE token = %s
                      LIMIT 1
@@ -82,7 +92,20 @@ class PgPaymentStore:
                 row = cur.fetchone()
                 if not row:
                     return None
-                buy_order, amount_minor, currency, provider, status, tok, redirect_url, success_url, failure_url, cancel_url = row
+                (
+                    pid,
+                    buy_order,
+                    amount_minor,
+                    currency,
+                    provider,
+                    status,
+                    tok,
+                    redirect_url,
+                    success_url,
+                    failure_url,
+                    cancel_url,
+                    company_id,
+                ) = row
                 p = Payment(
                     buy_order=str(buy_order),
                     amount=int(amount_minor),
@@ -93,30 +116,59 @@ class PgPaymentStore:
                     cancel_url=cancel_url,
                 )
                 p.status = PaymentStatus(str(status))
+                p.id = int(pid)
                 p.token = str(tok)
                 p.redirect_url = redirect_url
+                if company_id is not None:
+                    p.company_id = int(company_id)
                 return p
 
-    def get_by_idempotency(self, idempotency_key: str) -> Optional[Payment]:
+    def get_by_idempotency(self, idempotency_key: str, company_id: int | None = None) -> Optional[Payment]:
         with get_conn() as conn:
             if conn is None:
                 return None
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT buy_order, amount_minor, currency, provider, status, token, redirect_url,
-                           success_url, failure_url, cancel_url
-                      FROM payment
-                     WHERE idempotency_key = %s
-                     ORDER BY created_at DESC
-                     LIMIT 1
-                    """,
-                    (idempotency_key,),
-                )
+                if company_id is not None:
+                    cur.execute(
+                        """
+                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
+                               success_url, failure_url, cancel_url, company_id
+                          FROM payment
+                         WHERE idempotency_key = %s AND company_id = %s
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                        """,
+                        (idempotency_key, company_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
+                               success_url, failure_url, cancel_url, company_id
+                          FROM payment
+                         WHERE idempotency_key = %s
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                        """,
+                        (idempotency_key,),
+                    )
                 row = cur.fetchone()
                 if not row:
                     return None
-                buy_order, amount_minor, currency, provider, status, tok, redirect_url, success_url, failure_url, cancel_url = row
+                (
+                    pid,
+                    buy_order,
+                    amount_minor,
+                    currency,
+                    provider,
+                    status,
+                    tok,
+                    redirect_url,
+                    success_url,
+                    failure_url,
+                    cancel_url,
+                    comp_id,
+                ) = row
                 p = Payment(
                     buy_order=str(buy_order),
                     amount=int(amount_minor),
@@ -127,8 +179,11 @@ class PgPaymentStore:
                     cancel_url=cancel_url,
                 )
                 p.status = PaymentStatus(str(status))
+                p.id = int(pid)
                 p.token = str(tok)
                 p.redirect_url = redirect_url
+                if comp_id is not None:
+                    p.company_id = int(comp_id)
                 return p
 
     def update_provider_metadata(self, *, provider: str, token: str, metadata: dict[str, Any]) -> None:
@@ -169,24 +224,38 @@ class PgPaymentStore:
                 row = cur.fetchone()
                 return str(row[0]) if row and row[0] else None
 
-    def get_latest_token_by_buy_order(self, buy_order: str) -> Optional[str]:
+    def get_latest_token_by_buy_order(self, buy_order: str, company_id: int | None = None) -> Optional[str]:
         if not buy_order:
             return None
         with get_conn() as conn:
             if conn is None:
                 return None
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT token
-                      FROM payment
-                     WHERE provider = 'stripe'
-                       AND buy_order = %s
-                     ORDER BY created_at DESC
-                     LIMIT 1
-                    """,
-                    (buy_order,),
-                )
+                if company_id is not None:
+                    cur.execute(
+                        """
+                        SELECT token
+                          FROM payment
+                         WHERE provider = 'stripe'
+                           AND buy_order = %s
+                           AND company_id = %s
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                        """,
+                        (buy_order, company_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT token
+                          FROM payment
+                         WHERE provider = 'stripe'
+                           AND buy_order = %s
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                        """,
+                        (buy_order,),
+                    )
                 row = cur.fetchone()
                 return str(row[0]) if row and row[0] else None
 
@@ -198,7 +267,7 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id
                       FROM payment
                      WHERE status = 'PENDING'
                      ORDER BY created_at DESC
@@ -206,16 +275,18 @@ class PgPaymentStore:
                     """,
                 )
                 for row in cur.fetchall() or []:
-                    pid, buy_order, amount_minor, currency, provider, status, tok = row
+                    pid, buy_order, amount_minor, currency, provider, status, tok, company_id = row
                     p = Payment(
                         buy_order=str(buy_order),
                         amount=int(amount_minor),
                         currency=Currency(str(currency)),
                         provider=str(provider) if provider else None,
                     )
-                    p.id = str(pid)
+                    p.id = int(pid)
                     p.status = PaymentStatus(str(status))
                     p.token = str(tok) if tok else None
+                    if company_id is not None:
+                        p.company_id = int(company_id)
                     items.append(p)
         return items
 
@@ -227,23 +298,25 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id
                       FROM payment
                      ORDER BY created_at DESC
                      LIMIT 200
                     """,
                 )
                 for row in cur.fetchall() or []:
-                    pid, buy_order, amount_minor, currency, provider, status, tok = row
+                    pid, buy_order, amount_minor, currency, provider, status, tok, company_id = row
                     p = Payment(
                         buy_order=str(buy_order),
                         amount=int(amount_minor),
                         currency=Currency(str(currency)),
                         provider=str(provider) if provider else None,
                     )
-                    p.id = str(pid)
+                    p.id = int(pid)
                     p.status = PaymentStatus(str(status))
                     p.token = str(tok) if tok else None
+                    if company_id is not None:
+                        p.company_id = int(company_id)
                     items.append(p)
         return items
 

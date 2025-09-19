@@ -44,6 +44,13 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
     metadata = payload.get("metadata") or {}
     payment_intent_id = payload.get("payment_intent") or metadata.get("payment_intent_id")
     token = None
+    company_meta = metadata.get("company_id") or metadata.get("COMPANY_ID")
+    company_id: int | None = None
+    if company_meta is not None:
+        try:
+            company_id = int(company_meta)
+        except (TypeError, ValueError):
+            company_id = None
     logger.info(
         "stripe refund start",
         extra={
@@ -52,6 +59,7 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
             "payment_intent": str(payment_intent_id or ""),
             "charge": str(payload.get("charge") or ""),
             "metadata": metadata,
+            "company_id": company_id,
         },
     )
     if payment_intent_id:
@@ -76,7 +84,7 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
             },
         )
         if buy_order_meta:
-            token = _store.get_latest_token_by_buy_order(str(buy_order_meta))
+            token = _store.get_latest_token_by_buy_order(str(buy_order_meta), company_id=company_id)
             logger.info(
                 "stripe refund buy_order result",
                 extra={
@@ -84,6 +92,7 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
                     "event": event_type,
                     "buy_order": str(buy_order_meta or ""),
                     "token": token or "",
+                    "company_id": company_id,
                 },
             )
     if not token:
@@ -226,8 +235,12 @@ async def create_payment(
     try:
         result = await _service.create_payment(request, idempotency_key)
     except ValueError as exc:
-        # Surface business errors and unknown provider as 400
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        detail = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST
+        if "company" in detail.lower():
+            status_code = status.HTTP_401_UNAUTHORIZED
+        # Surface business errors, invalid credentials, and unknown provider
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     logger.info(
         "create_payment responded",
         extra={
@@ -386,6 +399,7 @@ async def list_pending() -> list[PaymentSummary]:
             status=p.status,
             token=p.token,
             provider=p.provider,
+            company_id=p.company_id,
         )
         for p in items
     ]
@@ -402,6 +416,7 @@ async def list_all() -> list[PaymentSummary]:
             status=p.status,
             token=p.token,
             provider=p.provider,
+            company_id=p.company_id,
         )
         for p in items
     ]
@@ -547,7 +562,16 @@ async def get_redirect(token: str) -> RedirectInfo:
 @router.post("/refund", response_model=RefundResponse, dependencies=[Depends(verify_bearer_token)])
 async def refund_payment(req: RefundRequest) -> RefundResponse:
     try:
-        status_val = await _service.refund(req.token, req.amount)
+        company = _service.company_store.validate_credentials(req.company_id, req.company_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    payment = _store.get_by_token(req.token)
+    if not payment or payment.company_id != company.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown token")
+
+    try:
+        status_val = await _service.refund(req.token, req.amount, company_id=company.id)
         return RefundResponse(status=status_val)
     except ValueError as exc:  # unknown token
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

@@ -19,6 +19,8 @@ class PaymentCreateRequest(BaseModel):
         default=None,
         description="Selected provider (webpay|stripe|paypal). Defaults to config",
     )
+    company_id: int = Field(..., description="Authorized company identifier")
+    company_token: str = Field(..., description="API token issued to the company")
     # Optional frontend redirects after processing the return
     success_url: str | None = Field(
         default=None, description="Front URL to redirect when authorized"
@@ -54,13 +56,14 @@ class PaymentStatusResponse(BaseModel):
 
 
 class PaymentSummary(BaseModel):
-    id: str
+    id: int
     buy_order: str
     amount: int
     currency: Currency
     status: PaymentStatus
     token: str | None = None
     provider: str | None = None
+    company_id: int | None = None
 
 
 class RefreshRequest(BaseModel):
@@ -83,6 +86,8 @@ class StatusCheckResult(BaseModel):
 class RefundRequest(BaseModel):
     token: str
     amount: int | None = None
+    company_id: int
+    company_token: str
 
 
 class RefundResponse(BaseModel):

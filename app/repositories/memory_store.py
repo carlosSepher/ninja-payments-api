@@ -9,15 +9,17 @@ class InMemoryPaymentStore:
     """Simple in-memory payment repository."""
 
     def __init__(self) -> None:
-        self.by_id: Dict[str, Payment] = {}
-        self.by_token: Dict[str, str] = {}
-        self.by_idempotency: Dict[str, str] = {}
+        self.by_id: Dict[int, Payment] = {}
+        self.by_token: Dict[str, int] = {}
+        self.by_idempotency: Dict[str, int] = {}
 
     def save(self, payment: Payment, token: str, idempotency_key: str | None = None) -> None:
-        self.by_id[payment.id] = payment
-        self.by_token[token] = payment.id
+        pid = payment.id or (max(self.by_id.keys(), default=0) + 1)
+        payment.id = pid
+        self.by_id[pid] = payment
+        self.by_token[token] = pid
         if idempotency_key:
-            self.by_idempotency[idempotency_key] = payment.id
+            self.by_idempotency[idempotency_key] = pid
 
     def get_by_token(self, token: str) -> Optional[Payment]:
         payment_id = self.by_token.get(token)
@@ -25,7 +27,7 @@ class InMemoryPaymentStore:
             return self.by_id.get(payment_id)
         return None
 
-    def get_by_idempotency(self, key: str) -> Optional[Payment]:
+    def get_by_idempotency(self, key: str, company_id: int | None = None) -> Optional[Payment]:
         payment_id = self.by_idempotency.get(key)
         if payment_id:
             return self.by_id.get(payment_id)

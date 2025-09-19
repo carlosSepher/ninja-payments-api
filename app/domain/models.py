@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from uuid import uuid4
+from dataclasses import dataclass
 
 from .enums import Currency
 from .statuses import PaymentStatus
@@ -14,7 +13,7 @@ class Payment:
     buy_order: str
     amount: int
     currency: Currency
-    id: str = field(default_factory=lambda: uuid4().hex)
+    id: int | None = None
     status: PaymentStatus = PaymentStatus.PENDING
     token: str | None = None
     redirect_url: str | None = None
@@ -23,3 +22,15 @@ class Payment:
     success_url: str | None = None
     failure_url: str | None = None
     cancel_url: str | None = None
+    company_id: int | None = None
+
+
+@dataclass
+class Company:
+    """Represents a company/merchant authorized to use the API."""
+
+    id: int
+    name: str
+    contact_email: str | None
+    api_token: str
+    active: bool = True

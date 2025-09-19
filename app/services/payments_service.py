@@ -14,6 +14,7 @@ from app.domain.models import Payment
 from app.domain.statuses import PaymentStatus
 from app.providers.factory import get_provider, get_provider_by_name
 from app.repositories.pg_store import PgPaymentStore
+from app.repositories.company_store import PgCompanyStore
 
 
 class PaymentsService:
@@ -24,6 +25,7 @@ class PaymentsService:
         self.settings = cfg
         self.provider = get_provider(cfg)
         self.logger = logging.getLogger(__name__)
+        self.company_store = PgCompanyStore()
         # DB-backed store is the source of truth now
 
     async def create_payment(
@@ -36,8 +38,10 @@ class PaymentsService:
         if request.amount <= 0:
             raise ValueError("Amount must be positive")
 
+        company = self.company_store.validate_credentials(request.company_id, request.company_token)
+
         if idempotency_key:
-            existing = self.store.get_by_idempotency(idempotency_key)
+            existing = self.store.get_by_idempotency(idempotency_key, company.id)
             if existing and existing.token and existing.redirect_url:
                 self.logger.info(
                     "idempotency hit; returning existing redirect",
@@ -46,6 +50,7 @@ class PaymentsService:
                         "idempotency_key": idempotency_key,
                         "token": existing.token,
                         "status": existing.status.value,
+                        "company_id": company.id,
                     },
                 )
                 # Build redirect info depending on provider
@@ -75,6 +80,7 @@ class PaymentsService:
             success_url=request.success_url,
             failure_url=request.failure_url,
             cancel_url=request.cancel_url,
+            company_id=company.id,
         )
         self.logger.info(
             "creating transaction with provider",
@@ -83,6 +89,7 @@ class PaymentsService:
                 "amount": payment.amount,
                 "currency": payment.currency.value,
                 "provider": provider_name,
+                "company_id": company.id,
             },
         )
         provider = get_provider_by_name(self.settings, provider_name)
@@ -92,7 +99,12 @@ class PaymentsService:
         self.store.save(payment, token, idempotency_key)
         self.logger.info(
             "payment stored",
-            extra={"buy_order": payment.buy_order, "token": token, "status": PaymentStatus.PENDING.value},
+            extra={
+                "buy_order": payment.buy_order,
+                "token": token,
+                "status": PaymentStatus.PENDING.value,
+                "company_id": company.id,
+            },
         )
         if provider_name in {"webpay", "transbank"}:
             redirect = RedirectInfo(url=redirect_url, token=token, method="POST", form_fields={"token_ws": token})
@@ -189,10 +201,12 @@ class PaymentsService:
         provider = get_provider_by_name(self.settings, provider_name)
         return await provider.status(token)
 
-    async def refund(self, token: str, amount: int | None = None) -> PaymentStatus:
+    async def refund(self, token: str, amount: int | None = None, company_id: int | None = None) -> PaymentStatus:
         payment = self.store.get_by_token(token)
         if not payment:
             raise ValueError("Unknown token")
+        if company_id is not None and payment.company_id is not None and payment.company_id != company_id:
+            raise ValueError("Invalid company for token")
         provider_name = payment.provider or self.settings.provider
         provider = get_provider_by_name(self.settings, provider_name)
         # For Webpay, default to full refund when amount is omitted

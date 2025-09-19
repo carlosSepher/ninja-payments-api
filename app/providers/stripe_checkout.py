@@ -54,9 +54,10 @@ class StripeCheckoutProvider(PaymentProvider):
             ],
             "metadata": {
                 "buy_order": payment.buy_order,
-                "payment_id": payment.id,
             },
         }
+        if payment.company_id is not None:
+            session_kwargs["metadata"]["company_id"] = str(payment.company_id)
 
         def _create_session() -> stripe.checkout.Session:  # type: ignore[name-defined]
             return stripe.checkout.Session.create(  # type: ignore[no-any-return]

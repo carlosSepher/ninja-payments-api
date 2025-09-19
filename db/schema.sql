@@ -47,9 +47,24 @@ BEGIN
   END IF;
 END$$;
 
+-- Empresas autorizadas
+CREATE TABLE IF NOT EXISTS payments.company (
+  id             BIGSERIAL PRIMARY KEY,
+  name           text NOT NULL,
+  contact_email  text,
+  api_token      text NOT NULL,
+  active         boolean NOT NULL DEFAULT TRUE,
+  metadata       jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (api_token)
+);
+CREATE INDEX IF NOT EXISTS ix_company_active ON payments.company(active);
+CREATE INDEX IF NOT EXISTS ix_company_name ON payments.company(name);
+
 -- Cuentas de PSP (sin secretos)
 CREATE TABLE IF NOT EXISTS payments.provider_account (
-  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id                  BIGSERIAL PRIMARY KEY,
   provider            payments.provider_type NOT NULL,
   name                text NOT NULL,
   merchant_id         text,
@@ -64,28 +79,32 @@ CREATE TABLE IF NOT EXISTS payments.provider_account (
 
 -- Orden de pago (una orden puede tener múltiples intentos de pago)
 CREATE TABLE IF NOT EXISTS payments.payment_order (
-  id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  buy_order               text NOT NULL UNIQUE, -- Un único identificador de negocio (por ahora único global)
+  id                      BIGSERIAL PRIMARY KEY,
+  company_id              bigint NOT NULL REFERENCES payments.company(id) ON DELETE CASCADE,
+  buy_order               text NOT NULL,
   environment             payments.environment_type NOT NULL DEFAULT 'test',
   currency                varchar(3) CHECK (currency IS NULL OR char_length(currency)=3),
   amount_expected_minor   bigint CHECK (amount_expected_minor IS NULL OR amount_expected_minor > 0),
   status                  payments.order_status NOT NULL DEFAULT 'OPEN',
   metadata                jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at              timestamptz NOT NULL DEFAULT now(),
-  updated_at              timestamptz NOT NULL DEFAULT now()
+  updated_at              timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (company_id, buy_order)
 );
 CREATE INDEX IF NOT EXISTS ix_payment_order_created_at ON payments.payment_order(created_at);
 CREATE INDEX IF NOT EXISTS ix_payment_order_status ON payments.payment_order(status);
+CREATE INDEX IF NOT EXISTS ix_payment_order_company ON payments.payment_order(company_id);
 
 -- Transacciones/Intentos de pago
 CREATE TABLE IF NOT EXISTS payments.payment (
-  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  payment_order_id      uuid NOT NULL REFERENCES payments.payment_order(id) ON DELETE CASCADE,
+  id                    BIGSERIAL PRIMARY KEY,
+  payment_order_id      bigint NOT NULL REFERENCES payments.payment_order(id) ON DELETE CASCADE,
+  company_id            bigint NOT NULL REFERENCES payments.company(id) ON DELETE CASCADE,
   buy_order             text NOT NULL,                      -- redundante para comodidad de consulta
   amount_minor          bigint NOT NULL CHECK (amount_minor > 0),
   currency              varchar(3) NOT NULL CHECK (char_length(currency)=3),
   provider              payments.provider_type NOT NULL,
-  provider_account_id   uuid REFERENCES payments.provider_account(id),
+  provider_account_id   bigint REFERENCES payments.provider_account(id),
   environment           payments.environment_type NOT NULL DEFAULT 'test',
 
   status                payments.payment_status NOT NULL DEFAULT 'PENDING',
@@ -117,16 +136,19 @@ CREATE TABLE IF NOT EXISTS payments.payment (
 -- Índices payment
 CREATE INDEX IF NOT EXISTS ix_payment_order_id ON payments.payment(payment_order_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_provider_token ON payments.payment(provider, token) WHERE token IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_idempotency_key ON payments.payment(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_company_idempotency
+  ON payments.payment(company_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_payment_buy_order ON payments.payment(buy_order);
 CREATE INDEX IF NOT EXISTS ix_payment_provider_status ON payments.payment(provider, status);
 CREATE INDEX IF NOT EXISTS ix_payment_created_at ON payments.payment(created_at);
 CREATE INDEX IF NOT EXISTS ix_payment_provider_account ON payments.payment(provider_account_id);
+CREATE INDEX IF NOT EXISTS ix_payment_company ON payments.payment(company_id);
 
 -- Historial de estados
 CREATE TABLE IF NOT EXISTS payments.payment_state_history (
-  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  payment_id       uuid NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
+  id               BIGSERIAL PRIMARY KEY,
+  payment_id       bigint NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
   from_status      payments.payment_status,
   to_status        payments.payment_status NOT NULL,
   event_type       payments.event_type NOT NULL,
@@ -142,10 +164,10 @@ CREATE INDEX IF NOT EXISTS ix_state_history_payment ON payments.payment_state_hi
 
 -- Eventos de integración (IO con PSP)
 CREATE TABLE IF NOT EXISTS payments.provider_event_log (
-  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  payment_id          uuid REFERENCES payments.payment(id) ON DELETE SET NULL,
+  id                  BIGSERIAL PRIMARY KEY,
+  payment_id          bigint REFERENCES payments.payment(id) ON DELETE SET NULL,
   provider            payments.provider_type NOT NULL,
-  provider_account_id uuid REFERENCES payments.provider_account(id) ON DELETE SET NULL,
+  provider_account_id bigint REFERENCES payments.provider_account(id) ON DELETE SET NULL,
   direction           payments.direction_type NOT NULL,
   operation           payments.operation_type NOT NULL,
   request_url         text,
@@ -163,7 +185,7 @@ CREATE INDEX IF NOT EXISTS ix_event_log_provider ON payments.provider_event_log(
 
 -- Registro de eventos de runtime (heartbeats, salud, configuración)
 CREATE TABLE IF NOT EXISTS payments.service_runtime_log (
-  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id              BIGSERIAL PRIMARY KEY,
   instance_id     text NOT NULL,
   host_name       text,
   process_id      integer,
@@ -183,14 +205,14 @@ CREATE INDEX IF NOT EXISTS ix_service_runtime_log_event_time
 
 -- Bandeja de webhooks
 CREATE TABLE IF NOT EXISTS payments.webhook_inbox (
-  id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id                   BIGSERIAL PRIMARY KEY,
   provider             payments.provider_type NOT NULL,
   event_id             text,
   event_type           text,
   verification_status  payments.verification_status NOT NULL DEFAULT 'UNKNOWN',
   headers              jsonb NOT NULL DEFAULT '{}'::jsonb,
   payload              jsonb NOT NULL,
-  related_payment_id   uuid REFERENCES payments.payment(id) ON DELETE SET NULL,
+  related_payment_id   bigint REFERENCES payments.payment(id) ON DELETE SET NULL,
   received_at          timestamptz NOT NULL DEFAULT now(),
   verified_at          timestamptz,
   processed_at         timestamptz,
@@ -203,8 +225,8 @@ CREATE INDEX IF NOT EXISTS ix_webhook_related_payment ON payments.webhook_inbox(
 
 -- Refunds
 CREATE TABLE IF NOT EXISTS payments.refund (
-  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  payment_id         uuid NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
+  id                 BIGSERIAL PRIMARY KEY,
+  payment_id         bigint NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
   provider           payments.provider_type NOT NULL,
   amount_minor       bigint NOT NULL CHECK (amount_minor > 0),
   status             payments.refund_status NOT NULL DEFAULT 'REQUESTED',
@@ -220,8 +242,8 @@ CREATE INDEX IF NOT EXISTS ix_refund_payment ON payments.refund(payment_id, crea
 
 -- Registros de chequeos (para reconciliador)
 CREATE TABLE IF NOT EXISTS payments.status_check (
-  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  payment_id       uuid NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
+  id               BIGSERIAL PRIMARY KEY,
+  payment_id       bigint NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
   provider         payments.provider_type NOT NULL,
   requested_at     timestamptz NOT NULL DEFAULT now(),
   success          boolean,
@@ -236,8 +258,8 @@ CREATE INDEX IF NOT EXISTS ix_status_check_payment ON payments.status_check(paym
 
 -- Disputas / chargebacks (opcional)
 CREATE TABLE IF NOT EXISTS payments.dispute (
-  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  payment_id          uuid NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
+  id                  BIGSERIAL PRIMARY KEY,
+  payment_id          bigint NOT NULL REFERENCES payments.payment(id) ON DELETE CASCADE,
   provider            payments.provider_type NOT NULL,
   provider_dispute_id text,
   status              text,
@@ -254,7 +276,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_dispute_provider_id ON payments.dispute(pro
 
 -- Liquidaciones / clearing (opcional; para reconciliación por archivos)
 CREATE TABLE IF NOT EXISTS payments.settlement_batch (
-  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id            BIGSERIAL PRIMARY KEY,
   provider      payments.provider_type NOT NULL,
   batch_date    date NOT NULL,
   currency      varchar(3) CHECK (currency IS NULL OR char_length(currency)=3),
@@ -265,9 +287,9 @@ CREATE TABLE IF NOT EXISTS payments.settlement_batch (
 );
 
 CREATE TABLE IF NOT EXISTS payments.settlement_item (
-  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  batch_id         uuid NOT NULL REFERENCES payments.settlement_batch(id) ON DELETE CASCADE,
-  payment_id       uuid REFERENCES payments.payment(id) ON DELETE SET NULL,
+  id               BIGSERIAL PRIMARY KEY,
+  batch_id         bigint NOT NULL REFERENCES payments.settlement_batch(id) ON DELETE CASCADE,
+  payment_id       bigint REFERENCES payments.payment(id) ON DELETE SET NULL,
   buy_order        text,
   provider_token   text,
   status_text      text,               -- estado en archivo
@@ -323,6 +345,14 @@ BEGIN
 END$$;
 
 -- Enlazar triggers
+DROP TRIGGER IF EXISTS trg_company_touch ON payments.company;
+CREATE TRIGGER trg_company_touch BEFORE UPDATE ON payments.company
+FOR EACH ROW EXECUTE FUNCTION payments.fn_touch_updated_at();
+
+DROP TRIGGER IF EXISTS trg_provider_account_touch ON payments.provider_account;
+CREATE TRIGGER trg_provider_account_touch BEFORE UPDATE ON payments.provider_account
+FOR EACH ROW EXECUTE FUNCTION payments.fn_touch_updated_at();
+
 DROP TRIGGER IF EXISTS trg_payment_order_touch ON payments.payment_order;
 CREATE TRIGGER trg_payment_order_touch BEFORE UPDATE ON payments.payment_order
 FOR EACH ROW EXECUTE FUNCTION payments.fn_touch_updated_at();
