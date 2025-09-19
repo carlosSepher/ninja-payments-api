@@ -4,6 +4,8 @@ import logging
 import stripe  # type: ignore[import-untyped]
 from typing import Any
 
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi import Response
 from fastapi.responses import RedirectResponse
