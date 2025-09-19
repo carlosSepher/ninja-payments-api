@@ -394,12 +394,12 @@ class PgPaymentStore:
                 cur.execute(
                     """
                     INSERT INTO provider_event_log (
-                        id, payment_id, provider, direction, operation, request_url,
+                        payment_id, provider, direction, operation, request_url,
                         request_headers, request_body,
                         response_status, response_headers, response_body,
                         error_message, latency_ms, created_at
                     ) VALUES (
-                        gen_random_uuid(), %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
                         %s, %s,
                         %s, %s, %s,
                         %s, %s, NOW()
@@ -445,10 +445,10 @@ class PgPaymentStore:
                 cur.execute(
                     """
                     INSERT INTO webhook_inbox (
-                        id, provider, event_id, event_type, verification_status, headers, payload,
+                        provider, event_id, event_type, verification_status, headers, payload,
                         related_payment_id, received_at
                     ) VALUES (
-                        gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, NOW()
+                        %s, %s, %s, %s, %s, %s, %s, NOW()
                     ) ON CONFLICT (provider, event_id) DO NOTHING
                     """,
                     (
@@ -494,10 +494,10 @@ class PgPaymentStore:
                 cur.execute(
                     """
                     INSERT INTO refund (
-                        id, payment_id, provider, amount_minor, status,
+                        payment_id, provider, amount_minor, status,
                         provider_refund_id, reason, payload, confirmed_at
                     ) VALUES (
-                        gen_random_uuid(), %s, %s, %s, %s,
+                        %s, %s, %s, %s,
                         %s, %s, %s, %s
                     )
                     """,
