@@ -439,21 +439,20 @@ async def paypal_webhook(request: Request) -> Response:
         )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="PayPal webhook not configured")
 
-    raw = await request.body()
     try:
-        event = request.json() if hasattr(request, "json") else None
-    except Exception:
-        event = None
-    if event is None:
-        import json as _json  # local import to avoid overshadow
-        try:
-            event = _json.loads(raw.decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "paypal webhook invalid json",
-                extra={"endpoint": "/api/payments/paypal/webhook", "event": str(exc)},
-            )
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook payload")
+        event = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "paypal webhook invalid json",
+            extra={"endpoint": "/api/payments/paypal/webhook", "event": str(exc)},
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook payload")
+    if not isinstance(event, dict):
+        logger.info(
+            "paypal webhook unexpected payload",
+            extra={"endpoint": "/api/payments/paypal/webhook"},
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook payload")
 
     headers = request.headers
     transmission_id = headers.get("PayPal-Transmission-Id")
