@@ -496,10 +496,13 @@ async def paypal_webhook(request: Request) -> Response:
 
     event_type = str(event.get("event_type", ""))
     resource = event.get("resource", {}) or {}
-    order_id = str(resource.get("id") or "")
+    related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+    order_id = str(related_ids.get("order_id") or "")
+    capture_id = str(related_ids.get("capture_id") or "")
     if not order_id:
-        # Try related ids for capture refund events
-        order_id = str(((resource.get("supplementary_data") or {}).get("related_ids") or {}).get("order_id") or "")
+        order_id = str(resource.get("id") or "")
+    if not capture_id:
+        capture_id = str(resource.get("id") or "")
 
     logger.info(
         "paypal webhook received",
@@ -539,7 +542,7 @@ async def paypal_webhook(request: Request) -> Response:
         if payment:
             amount_info = resource.get("amount") or {}
             value_str = amount_info.get("value") if isinstance(amount_info, dict) else None
-            currency_code = amount_info.get("currency_code") if isinstance(amount_info, dict) else None
+            currency_code = amount_info.get("currency_code") if isinstance(amount_info, dict) else payment.currency.value
             if value_str is not None:
                 try:
                     dec = Decimal(str(value_str))
@@ -550,6 +553,8 @@ async def paypal_webhook(request: Request) -> Response:
                         amount_minor = int((dec * 100).to_integral_value())
                 except (InvalidOperation, ValueError):
                     amount_minor = None
+            if amount_minor is None:
+                amount_minor = payment.amount
             try:
                 _store.update_status_by_token(
                     provider="paypal",
@@ -568,7 +573,7 @@ async def paypal_webhook(request: Request) -> Response:
                     provider="paypal",
                     amount=amount_minor,
                     status="SUCCEEDED",
-                    provider_refund_id=str(resource.get("id") or "") or None,
+                    provider_refund_id=(capture_id or str(resource.get("id") or "") or None),
                     payload=resource,
                     reason=str((resource.get("status_details") or {}).get("reason") or "") or None,
                 )
