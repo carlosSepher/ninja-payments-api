@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import stripe  # type: ignore[import-untyped]
 from typing import Any
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -534,11 +535,51 @@ async def paypal_webhook(request: Request) -> Response:
     # Handle refunds: mark store as REFUNDED if we can relate order_id
     if event_type.upper() in {"PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.PARTIALLY_REFUNDED"} and order_id:
         payment = _store.get_by_token(order_id)
+        amount_minor: int | None = None
         if payment:
-            payment.status = PaymentStatus.REFUNDED
+            amount_info = resource.get("amount") or {}
+            value_str = amount_info.get("value") if isinstance(amount_info, dict) else None
+            currency_code = amount_info.get("currency_code") if isinstance(amount_info, dict) else None
+            if value_str is not None:
+                try:
+                    dec = Decimal(str(value_str))
+                    zero_decimal = {"JPY", "KRW", "CLP", "HUF"}
+                    if currency_code and currency_code.upper() in zero_decimal:
+                        amount_minor = int(dec.to_integral_value())
+                    else:
+                        amount_minor = int((dec * 100).to_integral_value())
+                except (InvalidOperation, ValueError):
+                    amount_minor = None
+            try:
+                _store.update_status_by_token(
+                    provider="paypal",
+                    token=order_id,
+                    to_status=PaymentStatus.REFUNDED,
+                )
+                payment.status = PaymentStatus.REFUNDED
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "paypal webhook refund status update error",
+                    extra={"endpoint": "/api/payments/paypal/webhook", "token": order_id, "event": str(exc)},
+                )
+            try:
+                _store.record_refund(
+                    token=order_id,
+                    provider="paypal",
+                    amount=amount_minor,
+                    status="SUCCEEDED",
+                    provider_refund_id=str(resource.get("id") or "") or None,
+                    payload=resource,
+                    reason=str((resource.get("status_details") or {}).get("reason") or "") or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "paypal webhook refund log error",
+                    extra={"endpoint": "/api/payments/paypal/webhook", "token": order_id, "event": str(exc)},
+                )
             logger.info(
                 "paypal webhook refund applied",
-                extra={"endpoint": "/api/payments/paypal/webhook", "token": order_id, "status": payment.status.value},
+                extra={"endpoint": "/api/payments/paypal/webhook", "token": order_id, "status": PaymentStatus.REFUNDED.value, "refund_amount": amount_minor},
             )
         return Response(status_code=200)
 
