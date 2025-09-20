@@ -145,6 +145,32 @@ class PayPalCheckoutProvider(PaymentProvider):
                 except Exception:  # noqa: BLE001
                     detail_payload = {"text": resp.text[:512]}
                 response_body = detail_payload
+                already_captured = False
+                if isinstance(detail_payload, dict):
+                    if detail_payload.get("name") == "ORDER_ALREADY_CAPTURED":
+                        already_captured = True
+                    for item in detail_payload.get("details", []) or []:
+                        if isinstance(item, dict) and item.get("issue") == "ORDER_ALREADY_CAPTURED":
+                            already_captured = True
+                            break
+                if already_captured:
+                    logger.info(
+                        "paypal capture already completed",
+                        extra={"token": token, "response_code": 0},
+                    )
+                    self._log_event(
+                        operation="COMMIT",
+                        request_url=capture_url,
+                        token=token,
+                        request_headers=self._mask_headers(headers),
+                        request_body={},
+                        response_status=response_status,
+                        response_headers=response_headers,
+                        response_body=response_body,
+                        error_message=None,
+                        latency_ms=int((time.monotonic() - started) * 1000),
+                    )
+                    return 0
                 logger.info("paypal capture failed", extra={"token": token, "response_code": -1})
                 self._log_event(
                     operation="COMMIT",
