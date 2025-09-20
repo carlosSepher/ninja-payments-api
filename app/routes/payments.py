@@ -497,12 +497,32 @@ async def paypal_webhook(request: Request) -> Response:
     event_type = str(event.get("event_type", ""))
     resource = event.get("resource", {}) or {}
     related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
-    order_id = str(related_ids.get("order_id") or "")
+    raw_order_id = str(related_ids.get("order_id") or "")
     capture_id = str(related_ids.get("capture_id") or "")
-    if not order_id:
-        order_id = str(resource.get("id") or "")
     if not capture_id:
-        capture_id = str(resource.get("id") or "")
+        for link in resource.get("links", []) or []:
+            href = link.get("href")
+            rel = link.get("rel")
+            if isinstance(href, str) and rel == "up":
+                capture_id = href.rstrip("/").split("/")[-1]
+                break
+    payment = None
+    payment_token: str | None = None
+    if raw_order_id:
+        payment = _store.get_by_token(raw_order_id)
+        if payment:
+            payment_token = raw_order_id
+    if (payment is None or payment_token is None) and capture_id:
+        token_by_capture = _store.get_token_by_paypal_capture(capture_id)
+        if token_by_capture:
+            payment = _store.get_by_token(token_by_capture)
+            payment_token = token_by_capture
+    if payment_token is None:
+        fallback = str(resource.get("custom_id") or resource.get("invoice_id") or "")
+        payment_token = payment_token or fallback or raw_order_id or capture_id or None
+        if payment_token:
+            payment = payment or _store.get_by_token(payment_token)
+    order_id = payment_token or ""
 
     logger.info(
         "paypal webhook received",

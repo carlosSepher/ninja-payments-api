@@ -224,6 +224,27 @@ class PgPaymentStore:
                 row = cur.fetchone()
                 return str(row[0]) if row and row[0] else None
 
+    def get_token_by_paypal_capture(self, capture_id: str) -> Optional[str]:
+        if not capture_id:
+            return None
+        with get_conn() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT token
+                      FROM payment
+                     WHERE provider = 'paypal'
+                       AND provider_metadata ->> 'paypal_capture_id' = %s
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                    """,
+                    (capture_id,),
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else None
+
     def get_latest_token_by_buy_order(self, buy_order: str, company_id: int | None = None) -> Optional[str]:
         if not buy_order:
             return None

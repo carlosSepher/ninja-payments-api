@@ -187,6 +187,27 @@ class PayPalCheckoutProvider(PaymentProvider):
                 return -1
             data = resp.json()
             response_body = {"status": data.get("status")}
+            capture_id = None
+            try:
+                captures = (
+                    data.get("purchase_units") or [{}]
+                )[0].get("payments", {}).get("captures", [])
+                if captures:
+                    capture_id = str(captures[0].get("id") or "") or None
+            except Exception:  # noqa: BLE001
+                capture_id = None
+            if capture_id:
+                try:
+                    self.store.update_provider_metadata(
+                        provider="paypal",
+                        token=token,
+                        metadata={"paypal_capture_id": capture_id},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.info(
+                        "paypal capture metadata save error",
+                        extra={"token": token, "event": str(exc)},
+                    )
         except Exception as exc:  # noqa: BLE001
             latency_ms = int((time.monotonic() - started) * 1000)
             self._log_event(
