@@ -533,3 +533,59 @@ class PgPaymentStore:
                         confirmed_at,
                     ),
                 )
+
+    def record_dispute(
+        self,
+        *,
+        token: str,
+        provider: str,
+        provider_dispute_id: str | None,
+        status: str | None = None,
+        amount: int | None = None,
+        reason: str | None = None,
+        opened_at: datetime | None = None,
+        closed_at: datetime | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        with get_conn() as conn:
+            if conn is None:
+                return
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM payment WHERE token=%s LIMIT 1", (token,))
+                row = cur.fetchone()
+                if not row:
+                    return
+                payment_id = row[0]
+                amount_minor = int(amount) if amount is not None else None
+                status_value = status.upper() if status else None
+                cur.execute(
+                    """
+                    INSERT INTO dispute (
+                        payment_id, provider, provider_dispute_id, status,
+                        amount_minor, reason, opened_at, closed_at, payload
+                    ) VALUES (
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (provider, provider_dispute_id) DO UPDATE
+                        SET payment_id = EXCLUDED.payment_id,
+                            status = COALESCE(EXCLUDED.status, dispute.status),
+                            amount_minor = COALESCE(EXCLUDED.amount_minor, dispute.amount_minor),
+                            reason = COALESCE(EXCLUDED.reason, dispute.reason),
+                            opened_at = COALESCE(EXCLUDED.opened_at, dispute.opened_at),
+                            closed_at = COALESCE(EXCLUDED.closed_at, dispute.closed_at),
+                            payload = COALESCE(EXCLUDED.payload, dispute.payload),
+                            updated_at = NOW()
+                    """,
+                    (
+                        payment_id,
+                        provider,
+                        provider_dispute_id,
+                        status_value,
+                        amount_minor,
+                        reason,
+                        opened_at,
+                        closed_at,
+                        Json(payload or {}),
+                    ),
+                )

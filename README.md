@@ -512,6 +512,33 @@ PayPal (recommended for countries without Stripe)
 - Set `PAYPAL_WEBHOOK_ID` with your webhook id to enable signature verification.
 - In requests, use `provider: "paypal"`. The API will return an approval URL; the frontend redirects there, and PayPal returns to your API `return_url` (commit) or to `cancel_url` (we recommend `.../api/payments/tbk/return?paypal_cancel=1`).
 
+### Webhook Event → Payment Status
+
+Stripe webhooks all point to `POST /api/payments/stripe/webhook`. The handler updates the `payment.status` column (and dispute/refund tables) as follows:
+
+| Stripe event(s) | Resulting status | Notes |
+| --- | --- | --- |
+| `checkout.session.completed` | `AUTHORIZED` (if the PaymentIntent succeeds) / `FAILED` (otherwise) | Triggers `commit_payment`, which polls the session. |
+| `checkout.session.expired` | `CANCELED` | Marks abandoned sessions. |
+| `payment_intent.canceled` | `CANCELED` | Uses stored `payment_intent_id` metadata to locate the payment. |
+| `payment_intent.payment_failed` | `FAILED` | Last payment error message is stored as the reason. |
+| `charge.refunded`, `charge.refund.created`, `charge.refund.updated` | `REFUNDED` once the refunded amount covers the original charge; partial refunds keep the previous status but log the refund rows. |
+| `charge.dispute.created`, `charge.dispute.updated`, `charge.dispute.funds_withdrawn` | `FAILED` | Also inserts/updates the dispute record. |
+| `charge.dispute.closed` | `AUTHORIZED` when outcome is won; `FAILED` when lost. |
+| `charge.dispute.funds_reinstated` | `AUTHORIZED` | Funds returned to the merchant. |
+
+PayPal webhooks point to `POST /api/payments/paypal/webhook`. The handler keeps the payment row in sync and stores refunds/disputes:
+
+| PayPal event(s) | Resulting status | Notes |
+| --- | --- | --- |
+| `CHECKOUT.ORDER.APPROVED` | `AUTHORIZED` / `FAILED` depending on capture result | Calls `commit_payment` to capture and persist status. |
+| `PAYMENT.CAPTURE.COMPLETED` | `AUTHORIZED` (no change) | Capture info is logged for auditing. |
+| `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.PARTIALLY_REFUNDED` | `REFUNDED` | Amount stored in `refund` table; if partial, status stays `REFUNDED` with recorded amount. |
+| `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.REVERSED` | `FAILED` | Marks the payment as failed and logs the event. |
+| `PAYMENT.CAPTURE.CANCELLED` (if emitted) | `CANCELED` | Some PayPal accounts send this instead of the cancel URL flow. |
+| `CHECKOUT.ORDER.CANCELED` / `CHECKOUT.ORDER.CANCELLED` | `CANCELED` | Handles explicit cancels returned by PayPal. |
+| `CUSTOMER.DISPUTE.*` | `FAILED` while open or lost; switches to `AUTHORIZED` when outcome is `RESOLVED_SELLER_FAVOUR` | All dispute payloads are stored in `payments.dispute`. |
+
 ## Repository Scope
 
 This repository contains only the backend Payment API logic: creating transactions, communicating with PSPs (Webpay/Stripe/PayPal), handling the return/commit, webhooks, and refunds. Any demo frontend or reconciliation workers should live in separate repositories.

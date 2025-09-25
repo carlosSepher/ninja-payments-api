@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import stripe  # type: ignore[import-untyped]
 from typing import Any
-from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -41,6 +42,29 @@ STRIPE_REFUND_EVENTS = {
     "charge.refund.updated",
     "charge.refund.created",
 }
+
+STRIPE_DISPUTE_EVENTS = {
+    "charge.dispute.created",
+    "charge.dispute.updated",
+    "charge.dispute.closed",
+    "charge.dispute.funds_withdrawn",
+    "charge.dispute.funds_reinstated",
+}
+
+STRIPE_CANCELLATION_EVENTS = {
+    "payment_intent.canceled",
+    "payment_intent.payment_failed",
+    "checkout.session.expired",
+}
+
+
+def _stripe_epoch_to_datetime(value: Any) -> datetime | None:
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
 
 
 def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str | None:
@@ -216,6 +240,305 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
     )
     return token
 
+
+def _handle_stripe_dispute_event(event_type: str, payload: dict[str, Any]) -> str | None:
+    dispute_id = str(payload.get("id") or "") or None
+    payment_intent_id = payload.get("payment_intent")
+    if not payment_intent_id:
+        charge = payload.get("charge")
+        if isinstance(charge, dict):
+            payment_intent_id = charge.get("payment_intent")
+    token: str | None = None
+    if payment_intent_id:
+        token = _store.get_token_by_payment_intent(str(payment_intent_id))
+    if not token:
+        metadata = payload.get("metadata") or {}
+        buy_order_meta = metadata.get("buy_order") or metadata.get("BUY_ORDER")
+        company_meta = metadata.get("company_id") or metadata.get("COMPANY_ID")
+        company_id: int | None = None
+        if company_meta is not None:
+            try:
+                company_id = int(company_meta)
+            except (TypeError, ValueError):
+                company_id = None
+        if buy_order_meta:
+            token = _store.get_latest_token_by_buy_order(str(buy_order_meta), company_id=company_id)
+    if not token:
+        return None
+
+    amount_minor: int | None = None
+    amount_raw = payload.get("amount")
+    if amount_raw is not None:
+        try:
+            amount_minor = int(amount_raw)
+        except (TypeError, ValueError):
+            amount_minor = None
+
+    opened_at = _stripe_epoch_to_datetime(payload.get("created"))
+    closed_at = None
+    if event_type in {"charge.dispute.closed", "charge.dispute.funds_reinstated"}:
+        closed_at = _stripe_epoch_to_datetime(payload.get("closed")) or datetime.now(timezone.utc)
+
+    status_value = str(payload.get("status") or "")
+    reason = str(payload.get("reason") or "").strip() or None
+
+    try:
+        _store.record_dispute(
+            token=token,
+            provider="stripe",
+            provider_dispute_id=dispute_id,
+            status=status_value,
+            amount=amount_minor,
+            reason=reason,
+            opened_at=opened_at,
+            closed_at=closed_at,
+            payload=payload,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "stripe dispute log error",
+            extra={
+                "endpoint": "/api/payments/stripe/webhook",
+                "event": event_type,
+                "token": token,
+                "dispute": dispute_id or "",
+                "error": str(exc),
+            },
+        )
+
+    target_status: PaymentStatus | None = None
+    normalized_status = status_value.lower()
+    if event_type == "charge.dispute.closed":
+        if normalized_status in {"won", "warning_closed"}:
+            target_status = PaymentStatus.AUTHORIZED
+        elif normalized_status in {"lost", "warning_lost"}:
+            target_status = PaymentStatus.FAILED
+    elif event_type == "charge.dispute.funds_reinstated":
+        target_status = PaymentStatus.AUTHORIZED
+    elif event_type in {"charge.dispute.created", "charge.dispute.updated", "charge.dispute.funds_withdrawn"}:
+        target_status = PaymentStatus.FAILED
+
+    if target_status:
+        try:
+            _store.update_status_by_token(
+                provider="stripe",
+                token=token,
+                to_status=target_status,
+                reason=f"stripe dispute {dispute_id or ''} {normalized_status or event_type}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "stripe dispute status update error",
+                extra={
+                    "endpoint": "/api/payments/stripe/webhook",
+                    "event": event_type,
+                    "token": token,
+                    "dispute": dispute_id or "",
+                    "error": str(exc),
+                },
+            )
+
+    logger.info(
+        "stripe dispute handled",
+        extra={
+            "endpoint": "/api/payments/stripe/webhook",
+            "event": event_type,
+            "token": token,
+            "dispute": dispute_id or "",
+            "status": status_value,
+        },
+    )
+    return token
+
+
+def _handle_stripe_cancellation_event(event_type: str, payload: dict[str, Any]) -> str | None:
+    token: str | None = None
+    new_status = PaymentStatus.CANCELED
+    reason: str | None = None
+
+    if event_type in {"payment_intent.canceled", "payment_intent.payment_failed"}:
+        payment_intent_id = payload.get("id")
+        if payment_intent_id:
+            token = _store.get_token_by_payment_intent(str(payment_intent_id))
+        if not token:
+            metadata = payload.get("metadata") or {}
+            buy_order_meta = metadata.get("buy_order") or metadata.get("BUY_ORDER")
+            company_meta = metadata.get("company_id") or metadata.get("COMPANY_ID")
+            company_id: int | None = None
+            if company_meta is not None:
+                try:
+                    company_id = int(company_meta)
+                except (TypeError, ValueError):
+                    company_id = None
+            if buy_order_meta:
+                token = _store.get_latest_token_by_buy_order(str(buy_order_meta), company_id=company_id)
+        if event_type == "payment_intent.payment_failed":
+            new_status = PaymentStatus.FAILED
+            last_error = payload.get("last_payment_error") or {}
+            reason = str(last_error.get("message") or last_error.get("code") or "").strip() or None
+        else:
+            new_status = PaymentStatus.CANCELED
+            reason = str(payload.get("cancellation_reason") or "").strip() or None
+    elif event_type == "checkout.session.expired":
+        session_id = payload.get("id")
+        if session_id:
+            token = str(session_id)
+        reason = "stripe checkout.session.expired"
+        new_status = PaymentStatus.CANCELED
+    else:
+        return None
+
+    if not token:
+        return None
+
+    try:
+        _store.update_status_by_token(
+            provider="stripe",
+            token=token,
+            to_status=new_status,
+            reason=reason or f"stripe event {event_type}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "stripe cancellation status update error",
+            extra={
+                "endpoint": "/api/payments/stripe/webhook",
+                "event": event_type,
+                "token": token,
+                "error": str(exc),
+            },
+        )
+        return token
+
+    logger.info(
+        "stripe cancellation handled",
+        extra={
+            "endpoint": "/api/payments/stripe/webhook",
+            "event": event_type,
+            "token": token,
+            "status": new_status.value,
+        },
+    )
+    return token
+
+
+def _parse_paypal_time(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def _handle_paypal_dispute_event(
+    event_type: str,
+    resource: dict[str, Any],
+    fallback_token: str | None,
+) -> str | None:
+    dispute_id = str(resource.get("dispute_id") or "") or None
+    token: str | None = None
+
+    disputed_transactions = resource.get("disputed_transactions") or []
+    for tx in disputed_transactions:
+        if not isinstance(tx, dict):
+            continue
+        capture_id = tx.get("seller_transaction_id") or tx.get("transaction_id")
+        if capture_id:
+            token = _store.get_token_by_paypal_capture(str(capture_id))
+            if token:
+                break
+
+    if not token:
+        token = fallback_token
+    if not token:
+        return None
+
+    amount_minor: int | None = None
+    amount_info = resource.get("disputed_amount")
+    if not isinstance(amount_info, dict):
+        amount_info = resource.get("amount") if isinstance(resource.get("amount"), dict) else {}
+    value_raw = amount_info.get("value") if isinstance(amount_info, dict) else None
+    if value_raw is not None:
+        try:
+            quantized = Decimal(str(value_raw)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            amount_minor = int(quantized)
+        except (InvalidOperation, ValueError):
+            amount_minor = None
+
+    status_value = str(resource.get("status") or "")
+    reason = str(resource.get("reason") or "").strip() or None
+    outcome = str((resource.get("dispute_outcome") or {}).get("outcome_code") or "").upper() or ""
+
+    opened_at = _parse_paypal_time(resource.get("create_time"))
+    closed_at = _parse_paypal_time(resource.get("update_time")) if "RESOLVED" in event_type.upper() else None
+
+    try:
+        _store.record_dispute(
+            token=token,
+            provider="paypal",
+            provider_dispute_id=dispute_id,
+            status=status_value,
+            amount=amount_minor,
+            reason=reason or outcome or None,
+            opened_at=opened_at,
+            closed_at=closed_at,
+            payload=resource,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "paypal dispute log error",
+            extra={
+                "endpoint": "/api/payments/paypal/webhook",
+                "event": event_type,
+                "token": token,
+                "dispute": dispute_id or "",
+                "error": str(exc),
+            },
+        )
+
+    target_status: PaymentStatus | None = None
+    if event_type.upper().endswith("RESOLVED"):
+        if outcome == "RESOLVED_SELLER_FAVOUR":
+            target_status = PaymentStatus.AUTHORIZED
+        elif outcome:
+            target_status = PaymentStatus.FAILED
+    else:
+        target_status = PaymentStatus.FAILED
+
+    if target_status:
+        try:
+            _store.update_status_by_token(
+                provider="paypal",
+                token=token,
+                to_status=target_status,
+                reason=f"paypal dispute {dispute_id or ''} {outcome or status_value}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "paypal dispute status update error",
+                extra={
+                    "endpoint": "/api/payments/paypal/webhook",
+                    "event": event_type,
+                    "token": token,
+                    "dispute": dispute_id or "",
+                    "error": str(exc),
+                },
+            )
+
+    logger.info(
+        "paypal dispute handled",
+        extra={
+            "endpoint": "/api/payments/paypal/webhook",
+            "event": event_type,
+            "token": token,
+            "dispute": dispute_id or "",
+            "status": status_value,
+            "outcome": outcome,
+        },
+    )
+    return token
 
 
 @router.post("", response_model=PaymentCreateResponse, dependencies=[Depends(verify_bearer_token)])
@@ -495,6 +818,7 @@ async def paypal_webhook(request: Request) -> Response:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook signature")
 
     event_type = str(event.get("event_type", ""))
+    event_upper = event_type.upper()
     resource = event.get("resource", {}) or {}
     related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
     raw_order_id = str(related_ids.get("order_id") or "")
@@ -544,8 +868,81 @@ async def paypal_webhook(request: Request) -> Response:
             extra={"endpoint": "/api/payments/paypal/webhook", "event": str(exc)},
         )
 
+    if event_upper.startswith("CUSTOMER.DISPUTE."):
+        handled_token = _handle_paypal_dispute_event(event_upper, resource, order_id or None)
+        if not handled_token:
+            logger.info(
+                "paypal dispute token not found",
+                extra={
+                    "endpoint": "/api/payments/paypal/webhook",
+                    "event": event_type,
+                    "order_id": order_id,
+                },
+            )
+        return Response(status_code=200)
+
+    if event_upper in {"CHECKOUT.ORDER.CANCELLED", "CHECKOUT.ORDER.CANCELED", "PAYMENT.CAPTURE.CANCELLED"} and order_id:
+        try:
+            _store.update_status_by_token(
+                provider="paypal",
+                token=order_id,
+                to_status=PaymentStatus.CANCELED,
+                reason="paypal checkout order cancelled via webhook",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "paypal cancel status update error",
+                extra={
+                    "endpoint": "/api/payments/paypal/webhook",
+                    "event": event_type,
+                    "token": order_id,
+                    "error": str(exc),
+                },
+            )
+        else:
+            logger.info(
+                "paypal order cancelled",
+                extra={
+                    "endpoint": "/api/payments/paypal/webhook",
+                    "event": event_type,
+                    "token": order_id,
+                    "status": PaymentStatus.CANCELED.value,
+                },
+            )
+        return Response(status_code=200)
+
+    if event_upper in {"PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.REVERSED"} and order_id:
+        try:
+            _store.update_status_by_token(
+                provider="paypal",
+                token=order_id,
+                to_status=PaymentStatus.FAILED,
+                reason=f"paypal event {event_type}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "paypal capture failure status update error",
+                extra={
+                    "endpoint": "/api/payments/paypal/webhook",
+                    "event": event_type,
+                    "token": order_id,
+                    "error": str(exc),
+                },
+            )
+        else:
+            logger.info(
+                "paypal capture failed",
+                extra={
+                    "endpoint": "/api/payments/paypal/webhook",
+                    "event": event_type,
+                    "token": order_id,
+                    "status": PaymentStatus.FAILED.value,
+                },
+            )
+        return Response(status_code=200)
+
     # Handle primary event: approved order -> capture (commit)
-    if event_type.upper() == "CHECKOUT.ORDER.APPROVED" and order_id:
+    if event_upper == "CHECKOUT.ORDER.APPROVED" and order_id:
         try:
             await _service.commit_payment(order_id)
         except Exception as exc:  # noqa: BLE001
@@ -556,7 +953,7 @@ async def paypal_webhook(request: Request) -> Response:
         return Response(status_code=200)
 
     # Handle refunds: mark store as REFUNDED if we can relate order_id
-    if event_type.upper() in {"PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.PARTIALLY_REFUNDED"} and order_id:
+    if event_upper in {"PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.PARTIALLY_REFUNDED"} and order_id:
         payment = _store.get_by_token(order_id)
         amount_minor: int | None = None
         if payment:
@@ -696,6 +1093,10 @@ async def stripe_webhook(request: Request) -> Response:
         related_token = str(session_id)
     elif event_type in STRIPE_REFUND_EVENTS:
         related_token = _handle_stripe_refund_event(event_type, data)
+    elif event_type in STRIPE_DISPUTE_EVENTS:
+        related_token = _handle_stripe_dispute_event(event_type, data)
+    elif event_type in STRIPE_CANCELLATION_EVENTS:
+        related_token = _handle_stripe_cancellation_event(event_type, data)
 
     # Record webhook inbox entry for traceability
     try:
