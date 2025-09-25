@@ -215,3 +215,6 @@ reconciler/
 readme-db.md
 docs/
 cloud.env
+
+deploy/ec2.env
+ninja-payments-api.env
