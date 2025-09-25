@@ -566,11 +566,7 @@ async def paypal_webhook(request: Request) -> Response:
             if value_str is not None:
                 try:
                     dec = Decimal(str(value_str))
-                    zero_decimal = {"JPY", "KRW", "CLP", "HUF"}
-                    if currency_code and currency_code.upper() in zero_decimal:
-                        amount_minor = int(dec.to_integral_value())
-                    else:
-                        amount_minor = int((dec * 100).to_integral_value())
+                    amount_minor = int(dec.to_integral_value())
                 except (InvalidOperation, ValueError):
                     amount_minor = None
             if amount_minor is None:
