@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Dict
 
 from pydantic import BaseModel, Field
 
-from .enums import Currency, ProviderName
+from .enums import Currency, PaymentType, ProviderName
 from .statuses import PaymentStatus
 
 
@@ -14,6 +15,10 @@ class PaymentCreateRequest(BaseModel):
     buy_order: str
     amount: int
     currency: Currency
+    payment_type: PaymentType = Field(..., description="Tipo de pago: credito|debito|prepago")
+    commerce_id: str = Field(..., min_length=1, description="Identificador interno del comercio")
+    product_id: str = Field(..., min_length=1, description="Identificador del producto asociado")
+    product_name: str = Field(..., min_length=1, description="Nombre del producto al momento de la transaccion")
     return_url: str = Field(..., description="URL where Webpay will redirect")
     provider: ProviderName | None = Field(
         default=None,
@@ -47,6 +52,10 @@ class PaymentCreateResponse(BaseModel):
 
     status: PaymentStatus
     redirect: RedirectInfo
+    internal_id: int | None = Field(None, description="Identificador interno de la transaccion")
+    provider_transaction_id: str | None = Field(
+        None, description="Identificador entregado por el proveedor"
+    )
 
 
 class PaymentStatusResponse(BaseModel):
@@ -62,8 +71,14 @@ class PaymentSummary(BaseModel):
     currency: Currency
     status: PaymentStatus
     token: str | None = None
+    provider_transaction_id: str | None = None
     provider: str | None = None
     company_id: int | None = None
+    payment_type: PaymentType | None = None
+    commerce_id: str | None = None
+    product_id: str | None = None
+    product_name: str | None = None
+    created_at: datetime | None = None
 
 
 class RefreshRequest(BaseModel):

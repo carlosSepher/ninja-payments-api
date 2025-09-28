@@ -69,6 +69,7 @@ docker compose -f docker-compose.ec2.yml up -d
   ```bash
   docker compose -f docker-compose.ec2.yml logs -f
   curl http://localhost:3000/health
+  curl http://localhost:3000/health/metrics
   ```
 
 ## 5. Configure the Cloudflare tunnel (optional)
@@ -88,13 +89,13 @@ sudo systemctl enable --now cloudflared
 ```
 
 Then point your `graniteon.dev` DNS to the tunnel via Cloudflare. As your tunnel already exposes
-`graniteon.dev` → `http://app:3000`, you can keep that mapping so traffic lands on the FastAPI container.
+`graniteon.dev` → `http://localhost:3000`, you can keep that mapping so traffic lands on the FastAPI container.
 If you manage origins via a `config.yml`, the ingress stanza can stay simple:
 
 ```yaml
 ingress:
   - hostname: graniteon.dev
-    service: http://app:3000
+    service: http://localhost:3000
   - service: http_status:404
 ```
 

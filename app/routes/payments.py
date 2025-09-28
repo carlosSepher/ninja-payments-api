@@ -724,8 +724,16 @@ async def list_pending() -> list[PaymentSummary]:
             currency=p.currency,
             status=p.status,
             token=p.token,
+            provider_transaction_id=p.provider_metadata.get("payment_intent_id")
+            if p.provider_metadata
+            else p.token,
             provider=p.provider,
             company_id=p.company_id,
+            payment_type=p.payment_type,
+            commerce_id=p.commerce_id,
+            product_id=p.product_id,
+            product_name=p.product_name,
+            created_at=p.created_at,
         )
         for p in items
     ]
@@ -741,8 +749,16 @@ async def list_all() -> list[PaymentSummary]:
             currency=p.currency,
             status=p.status,
             token=p.token,
+            provider_transaction_id=p.provider_metadata.get("payment_intent_id")
+            if p.provider_metadata
+            else p.token,
             provider=p.provider,
             company_id=p.company_id,
+            payment_type=p.payment_type,
+            commerce_id=p.commerce_id,
+            product_id=p.product_id,
+            product_name=p.product_name,
+            created_at=p.created_at,
         )
         for p in items
     ]

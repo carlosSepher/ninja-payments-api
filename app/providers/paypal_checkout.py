@@ -122,6 +122,12 @@ class PayPalCheckoutProvider(PaymentProvider):
             response_body=response_body,
             latency_ms=latency_ms,
         )
+        payment.provider_metadata.update(
+            {
+                "paypal_order_id": order_id,
+                "buy_order": payment.buy_order,
+            }
+        )
         logger.info("paypal order created", extra={"buy_order": payment.buy_order, "token": order_id})
         return approve_url, order_id
 
@@ -206,6 +212,29 @@ class PayPalCheckoutProvider(PaymentProvider):
                 except Exception as exc:  # noqa: BLE001
                     logger.info(
                         "paypal capture metadata save error",
+                        extra={"token": token, "event": str(exc)},
+                    )
+            payer = data.get("payer") if isinstance(data, dict) else None
+            payer_email = None
+            payer_id = None
+            if isinstance(payer, dict):
+                payer_email = payer.get("email_address")
+                payer_id = payer.get("payer_id")
+            additional_meta: dict[str, str] = {}
+            if payer_email:
+                additional_meta["payer_email"] = str(payer_email)
+            if payer_id:
+                additional_meta["paypal_payer_id"] = str(payer_id)
+            if additional_meta:
+                try:
+                    self.store.update_provider_metadata(
+                        provider="paypal",
+                        token=token,
+                        metadata=additional_meta,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.info(
+                        "paypal capture payer metadata save error",
                         extra={"token": token, "event": str(exc)},
                     )
         except Exception as exc:  # noqa: BLE001

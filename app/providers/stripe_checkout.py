@@ -91,6 +91,12 @@ class StripeCheckoutProvider(PaymentProvider):
             },
             latency_ms=latency_ms,
         )
+        payment.provider_metadata.update(
+            {
+                "checkout_session_id": session.id,
+                "buy_order": payment.buy_order,
+            }
+        )
         logger.info(
             "stripe session created",
             extra={"buy_order": payment.buy_order, "token": session.id},
@@ -105,11 +111,17 @@ class StripeCheckoutProvider(PaymentProvider):
                 token, expand=["payment_intent"]
             )
             pi = getattr(session, "payment_intent", None)
+            customer_email = getattr(session, "customer_email", None)
+            if not customer_email:
+                customer_details = getattr(session, "customer_details", None)
+                if customer_details:
+                    customer_email = getattr(customer_details, "email", None)
             return {
                 "session_id": session.id,
                 "payment_status": getattr(session, "payment_status", None),
                 "payment_intent_status": getattr(pi, "status", None),
                 "payment_intent_id": getattr(pi, "id", None),
+                "customer_email": customer_email,
             }
 
         started = time.monotonic()
@@ -161,6 +173,19 @@ class StripeCheckoutProvider(PaymentProvider):
             except Exception as exc:  # noqa: BLE001
                 logger.info(
                     "stripe metadata save error",
+                    extra={"token": token, "event": str(exc)},
+                )
+        customer_email = result.get("customer_email")
+        if customer_email:
+            try:
+                self.store.update_provider_metadata(
+                    provider="stripe",
+                    token=token,
+                    metadata={"customer_email": str(customer_email)},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "stripe metadata email save error",
                     extra={"token": token, "event": str(exc)},
                 )
         if pi_status == "succeeded" or sess_payment_status == "paid":

@@ -13,7 +13,10 @@ BEGIN
     CREATE TYPE payments.provider_type AS ENUM ('webpay', 'stripe', 'paypal');
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_status') THEN
-    CREATE TYPE payments.payment_status AS ENUM ('PENDING','AUTHORIZED','FAILED','CANCELED','REFUNDED');
+    CREATE TYPE payments.payment_status AS ENUM ('PENDING','AUTHORIZED','FAILED','CANCELED','REFUNDED','TO_CONFIRM','ABANDONED');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_method_type') THEN
+    CREATE TYPE payments.payment_method_type AS ENUM ('credito','debito','prepago');
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'event_type') THEN
     CREATE TYPE payments.event_type AS ENUM (
@@ -104,6 +107,10 @@ CREATE TABLE IF NOT EXISTS payments.payment (
   amount_minor          bigint NOT NULL CHECK (amount_minor > 0),
   currency              varchar(3) NOT NULL CHECK (char_length(currency)=3),
   provider              payments.provider_type NOT NULL,
+  payment_type          payments.payment_method_type NOT NULL,
+  commerce_id           text NOT NULL,
+  product_id            text NOT NULL,
+  product_name          text NOT NULL,
   provider_account_id   bigint REFERENCES payments.provider_account(id),
   environment           payments.environment_type NOT NULL DEFAULT 'test',
 
@@ -144,6 +151,8 @@ CREATE INDEX IF NOT EXISTS ix_payment_provider_status ON payments.payment(provid
 CREATE INDEX IF NOT EXISTS ix_payment_created_at ON payments.payment(created_at);
 CREATE INDEX IF NOT EXISTS ix_payment_provider_account ON payments.payment(provider_account_id);
 CREATE INDEX IF NOT EXISTS ix_payment_company ON payments.payment(company_id);
+CREATE INDEX IF NOT EXISTS ix_payment_commerce ON payments.payment(commerce_id);
+CREATE INDEX IF NOT EXISTS ix_payment_product ON payments.payment(product_id);
 
 -- Historial de estados
 CREATE TABLE IF NOT EXISTS payments.payment_state_history (
@@ -398,6 +407,22 @@ SELECT
   (SELECT e.operation FROM payments.provider_event_log e WHERE e.payment_id=p.id ORDER BY e.created_at DESC LIMIT 1) AS last_operation,
   (SELECT e.created_at FROM payments.provider_event_log e WHERE e.payment_id=p.id ORDER BY e.created_at DESC LIMIT 1) AS last_operation_at
 FROM payments.payment p;
+
+-- Datos iniciales
+INSERT INTO payments.company (id, name, contact_email, api_token, active, metadata, created_at, updated_at)
+VALUES (
+  1,
+  'GraniteOn',
+  'carlos.sepulvedahe@gmail.com',
+  'p3V8qL1Zy9NwR6tX0aHbJ2mQ4sUfD8Ee',
+  TRUE,
+  '{}'::jsonb,
+  '2025-09-19 16:24:50.952-03'::timestamptz,
+  '2025-09-19 16:24:50.952-03'::timestamptz
+)
+ON CONFLICT (id) DO NOTHING;
+
+SELECT setval('payments.company_id_seq', GREATEST(1, (SELECT MAX(id) FROM payments.company)));
 
 CREATE OR REPLACE VIEW payments.v_order_summary AS
 SELECT

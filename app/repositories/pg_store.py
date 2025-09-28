@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional, Any
 
 from app.db.client import get_conn
-from app.domain.enums import Currency
+from app.domain.enums import Currency, PaymentType
 from app.domain.models import Payment
 from app.domain.statuses import PaymentStatus
 from psycopg2.extras import Json
@@ -38,19 +38,25 @@ class PgPaymentStore:
                 )
                 row = cur.fetchone()
                 order_id = row[0] if row else None
-                # Insert payment attempt
+                metadata_json = Json(payment.provider_metadata or {})
+                context_json = Json(payment.context or {})
+                # Insert payment attempt with enriched transaction metadata
                 cur.execute(
                     """
                     INSERT INTO payment (
-                        payment_order_id, company_id, buy_order, amount_minor, currency, provider, environment,
+                        payment_order_id, company_id, buy_order, amount_minor, currency, provider,
+                        payment_type, commerce_id, product_id, product_name,
+                        environment,
                         status, token, redirect_url, return_url, success_url, failure_url, cancel_url,
                         idempotency_key, provider_metadata, context, created_at, updated_at
                     ) VALUES (
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s,
                         %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s,
-                        %s, '{}'::jsonb, '{}'::jsonb, NOW(), NOW()
+                        %s, %s, %s, NOW(), NOW()
                     )
-                    RETURNING id
+                    RETURNING id, created_at
                     """,
                     (
                         order_id,
@@ -59,6 +65,10 @@ class PgPaymentStore:
                         int(payment.amount),
                         payment.currency.value,
                         (payment.provider or ''),
+                        payment.payment_type.value if payment.payment_type else None,
+                        payment.commerce_id,
+                        payment.product_id,
+                        payment.product_name,
                         'test',
                         payment.status.value,
                         token,
@@ -68,11 +78,14 @@ class PgPaymentStore:
                         payment.failure_url,
                         payment.cancel_url,
                         idempotency_key,
+                        metadata_json,
+                        context_json,
                     ),
                 )
                 inserted = cur.fetchone()
                 if inserted:
                     payment.id = int(inserted[0])
+                    payment.created_at = inserted[1]
 
     def get_by_token(self, token: str) -> Optional[Payment]:
         with get_conn() as conn:
@@ -82,7 +95,9 @@ class PgPaymentStore:
                 cur.execute(
                     """
                     SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
-                           success_url, failure_url, cancel_url, company_id
+                           success_url, failure_url, cancel_url, company_id,
+                           payment_type, commerce_id, product_id, product_name,
+                           created_at, provider_metadata, context
                       FROM payment
                      WHERE token = %s
                      LIMIT 1
@@ -105,12 +120,23 @@ class PgPaymentStore:
                     failure_url,
                     cancel_url,
                     company_id,
+                    payment_type,
+                    commerce_id,
+                    product_id,
+                    product_name,
+                    created_at,
+                    provider_metadata,
+                    context,
                 ) = row
                 p = Payment(
                     buy_order=str(buy_order),
                     amount=int(amount_minor),
                     currency=Currency(str(currency)),
                     provider=str(provider) if provider else None,
+                    payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                    commerce_id=str(commerce_id) if commerce_id else None,
+                    product_id=str(product_id) if product_id else None,
+                    product_name=str(product_name) if product_name else None,
                     success_url=success_url,
                     failure_url=failure_url,
                     cancel_url=cancel_url,
@@ -121,6 +147,11 @@ class PgPaymentStore:
                 p.redirect_url = redirect_url
                 if company_id is not None:
                     p.company_id = int(company_id)
+                p.created_at = created_at
+                if provider_metadata:
+                    p.provider_metadata = dict(provider_metadata)
+                if context:
+                    p.context = dict(context)
                 return p
 
     def get_by_idempotency(self, idempotency_key: str, company_id: int | None = None) -> Optional[Payment]:
@@ -132,7 +163,9 @@ class PgPaymentStore:
                     cur.execute(
                         """
                         SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
-                               success_url, failure_url, cancel_url, company_id
+                               success_url, failure_url, cancel_url, company_id,
+                               payment_type, commerce_id, product_id, product_name,
+                               created_at, provider_metadata, context
                           FROM payment
                          WHERE idempotency_key = %s AND company_id = %s
                          ORDER BY created_at DESC
@@ -144,7 +177,9 @@ class PgPaymentStore:
                     cur.execute(
                         """
                         SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
-                               success_url, failure_url, cancel_url, company_id
+                               success_url, failure_url, cancel_url, company_id,
+                               payment_type, commerce_id, product_id, product_name,
+                               created_at, provider_metadata, context
                           FROM payment
                          WHERE idempotency_key = %s
                          ORDER BY created_at DESC
@@ -168,12 +203,23 @@ class PgPaymentStore:
                     failure_url,
                     cancel_url,
                     comp_id,
+                    payment_type,
+                    commerce_id,
+                    product_id,
+                    product_name,
+                    created_at,
+                    provider_metadata,
+                    context,
                 ) = row
                 p = Payment(
                     buy_order=str(buy_order),
                     amount=int(amount_minor),
                     currency=Currency(str(currency)),
                     provider=str(provider) if provider else None,
+                    payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                    commerce_id=str(commerce_id) if commerce_id else None,
+                    product_id=str(product_id) if product_id else None,
+                    product_name=str(product_name) if product_name else None,
                     success_url=success_url,
                     failure_url=failure_url,
                     cancel_url=cancel_url,
@@ -184,6 +230,11 @@ class PgPaymentStore:
                 p.redirect_url = redirect_url
                 if comp_id is not None:
                     p.company_id = int(comp_id)
+                p.created_at = created_at
+                if provider_metadata:
+                    p.provider_metadata = dict(provider_metadata)
+                if context:
+                    p.context = dict(context)
                 return p
 
     def update_provider_metadata(self, *, provider: str, token: str, metadata: dict[str, Any]) -> None:
@@ -288,7 +339,8 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
+                           payment_type, commerce_id, product_id, product_name, created_at
                       FROM payment
                      WHERE status = 'PENDING'
                      ORDER BY created_at DESC
@@ -296,18 +348,37 @@ class PgPaymentStore:
                     """,
                 )
                 for row in cur.fetchall() or []:
-                    pid, buy_order, amount_minor, currency, provider, status, tok, company_id = row
+                    (
+                        pid,
+                        buy_order,
+                        amount_minor,
+                        currency,
+                        provider,
+                        status,
+                        tok,
+                        company_id,
+                        payment_type,
+                        commerce_id,
+                        product_id,
+                        product_name,
+                        created_at,
+                    ) = row
                     p = Payment(
                         buy_order=str(buy_order),
                         amount=int(amount_minor),
                         currency=Currency(str(currency)),
                         provider=str(provider) if provider else None,
+                        payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                        commerce_id=str(commerce_id) if commerce_id else None,
+                        product_id=str(product_id) if product_id else None,
+                        product_name=str(product_name) if product_name else None,
                     )
                     p.id = int(pid)
                     p.status = PaymentStatus(str(status))
                     p.token = str(tok) if tok else None
                     if company_id is not None:
                         p.company_id = int(company_id)
+                    p.created_at = created_at
                     items.append(p)
         return items
 
@@ -319,25 +390,45 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
+                           payment_type, commerce_id, product_id, product_name, created_at
                       FROM payment
                      ORDER BY created_at DESC
                      LIMIT 200
                     """,
                 )
                 for row in cur.fetchall() or []:
-                    pid, buy_order, amount_minor, currency, provider, status, tok, company_id = row
+                    (
+                        pid,
+                        buy_order,
+                        amount_minor,
+                        currency,
+                        provider,
+                        status,
+                        tok,
+                        company_id,
+                        payment_type,
+                        commerce_id,
+                        product_id,
+                        product_name,
+                        created_at,
+                    ) = row
                     p = Payment(
                         buy_order=str(buy_order),
                         amount=int(amount_minor),
                         currency=Currency(str(currency)),
                         provider=str(provider) if provider else None,
+                        payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                        commerce_id=str(commerce_id) if commerce_id else None,
+                        product_id=str(product_id) if product_id else None,
+                        product_name=str(product_name) if product_name else None,
                     )
                     p.id = int(pid)
                     p.status = PaymentStatus(str(status))
                     p.token = str(tok) if tok else None
                     if company_id is not None:
                         p.company_id = int(company_id)
+                    p.created_at = created_at
                     items.append(p)
         return items
 

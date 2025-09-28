@@ -44,7 +44,13 @@ def test_payment_flow() -> None:
         "buy_order": "order1",
         "amount": 1000,
         "currency": "CLP",
+        "payment_type": "credito",
+        "commerce_id": "store-001",
+        "product_id": "SKU-001",
+        "product_name": "Test product",
         "return_url": "http://example.com/return",
+        "company_id": 1,
+        "company_token": "company-token",
     }
     headers = {"Authorization": f"Bearer {settings.api_bearer_token}", "Idempotency-Key": "123"}
     response = client.post("/api/payments", json=payload, headers=headers)
@@ -54,3 +60,13 @@ def test_payment_flow() -> None:
     return_resp = client.get("/api/payments/tbk/return", params={"token_ws": token})
     assert return_resp.status_code == 200
     assert return_resp.json()["status"] == "AUTHORIZED"
+
+
+def test_health_metrics_endpoint() -> None:
+    client = TestClient(app)
+    response = client.get("/health/metrics")
+    assert response.status_code == 200
+    body = response.json()
+    assert "status" in body
+    assert "database" in body
+    assert "payments" in body

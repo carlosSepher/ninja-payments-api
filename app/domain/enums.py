@@ -16,3 +16,11 @@ class ProviderName(str, Enum):
     WEBPAY = "webpay"
     STRIPE = "stripe"
     PAYPAL = "paypal"
+
+
+class PaymentType(str, Enum):
+    """Supported payment instrument types."""
+
+    CREDIT = "credito"
+    DEBIT = "debito"
+    PREPAID = "prepago"

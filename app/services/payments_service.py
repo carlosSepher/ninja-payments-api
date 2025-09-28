@@ -10,7 +10,7 @@ from app.domain.dtos import (
     RefreshResult,
 )
 from app.domain.enums import Currency
-from app.domain.models import Payment
+from app.domain.models import Company, Payment
 from app.domain.statuses import PaymentStatus
 from app.providers.factory import get_provider, get_provider_by_name
 from app.repositories.pg_store import PgPaymentStore
@@ -38,7 +38,26 @@ class PaymentsService:
         if request.amount <= 0:
             raise ValueError("Amount must be positive")
 
-        company = self.company_store.validate_credentials(request.company_id, request.company_token)
+        try:
+            company = self.company_store.validate_credentials(request.company_id, request.company_token)
+        except ValueError as exc:
+            if not self.settings.db_enabled:
+                company = Company(
+                    id=request.company_id,
+                    name="offline-company",
+                    contact_email=None,
+                    api_token=request.company_token,
+                    active=True,
+                )
+                self.logger.warning(
+                    "company validation skipped (db disabled)",
+                    extra={
+                        "company_id": request.company_id,
+                        "reason": str(exc),
+                    },
+                )
+            else:
+                raise
 
         if idempotency_key:
             existing = self.store.get_by_idempotency(idempotency_key, company.id)
@@ -68,7 +87,12 @@ class PaymentsService:
                         method="GET",
                         form_fields={},
                     )
-                return PaymentCreateResponse(status=existing.status, redirect=redirect)
+                return PaymentCreateResponse(
+                    status=existing.status,
+                    redirect=redirect,
+                    internal_id=existing.id,
+                    provider_transaction_id=existing.token,
+                )
 
         # Resolve provider per request (fallback to settings)
 
@@ -77,6 +101,10 @@ class PaymentsService:
             amount=request.amount,
             currency=request.currency,
             provider=provider_name,
+            payment_type=request.payment_type,
+            commerce_id=request.commerce_id,
+            product_id=request.product_id,
+            product_name=request.product_name or request.buy_order,
             success_url=request.success_url,
             failure_url=request.failure_url,
             cancel_url=request.cancel_url,
@@ -89,6 +117,9 @@ class PaymentsService:
                 "amount": payment.amount,
                 "currency": payment.currency.value,
                 "provider": provider_name,
+                "payment_type": payment.payment_type.value if payment.payment_type else None,
+                "commerce_id": payment.commerce_id,
+                "product_id": payment.product_id,
                 "company_id": company.id,
             },
         )
@@ -110,7 +141,12 @@ class PaymentsService:
             redirect = RedirectInfo(url=redirect_url, token=token, method="POST", form_fields={"token_ws": token})
         else:
             redirect = RedirectInfo(url=redirect_url, token=token, method="GET", form_fields={})
-        return PaymentCreateResponse(status=PaymentStatus.PENDING, redirect=redirect)
+        return PaymentCreateResponse(
+            status=PaymentStatus.PENDING,
+            redirect=redirect,
+            internal_id=payment.id,
+            provider_transaction_id=token,
+        )
 
     async def commit_payment(self, token: str) -> PaymentStatusResponse:
         payment = self.store.get_by_token(token)

@@ -58,7 +58,13 @@ def test_webpay_refund_success() -> None:
         "buy_order": "order1",
         "amount": 2500,
         "currency": "CLP",
+        "payment_type": "credito",
+        "commerce_id": "store-001",
+        "product_id": "SKU-002",
+        "product_name": "Product for refund",
         "return_url": "http://example.com/return",
+        "company_id": 1,
+        "company_token": "company-token",
     }
     headers = {"Authorization": f"Bearer {settings.api_bearer_token}"}
     response = client.post("/api/payments", json=create_payload, headers=headers)
@@ -66,7 +72,11 @@ def test_webpay_refund_success() -> None:
     token = response.json()["redirect"]["token"]
 
     # Request refund without amount (defaults to full amount for TBK)
-    refund_payload = {"token": token}
+    refund_payload = {
+        "token": token,
+        "company_id": 1,
+        "company_token": "company-token",
+    }
     refund_resp = client.post("/api/payments/refund", json=refund_payload, headers=headers)
     assert refund_resp.status_code == 200
     assert refund_resp.json()["status"] == "REFUNDED"

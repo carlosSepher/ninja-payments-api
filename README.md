@@ -19,7 +19,7 @@ Create a payment:
 curl -X POST http://localhost:8000/api/payments \
   -H 'Authorization: Bearer testtoken' \
   -H 'Content-Type: application/json' \
-  -d '{"buy_order":"o-123","amount":1000,"currency":"CLP","return_url":"http://localhost:8000/api/payments/tbk/return","success_url":"http://localhost:3000/checkout/success","failure_url":"http://localhost:3000/checkout/failure","cancel_url":"http://localhost:3000/checkout/canceled"}'
+  -d '{"buy_order":"o-123","amount":1000,"currency":"CLP","payment_type":"credito","commerce_id":"store-001","product_id":"sku-123","product_name":"Plan Ninja","company_id":1,"company_token":"company-token","return_url":"http://localhost:8000/api/payments/tbk/return","success_url":"http://localhost:3000/checkout/success","failure_url":"http://localhost:3000/checkout/failure","cancel_url":"http://localhost:3000/checkout/canceled"}'
 ```
 
 The response contains a token and redirect URL. A minimal auto-post form looks like:
@@ -120,6 +120,7 @@ Code map highlights:
 - Refund attempts are normalized across PSPs; successful or failed attempts are stored in `payments.refund` with the PSP response payload for auditing.
 - Stripe webhooks: run `stripe listen --events checkout.session.completed,payment_intent.payment_failed --forward-to http://localhost:8000/api/payments/stripe/webhook` when developing locally.
 - PayPal webhooks: configure the webhook endpoint (`/api/payments/paypal/webhook`) in the PayPal developer dashboard or expose the API via tunnel/EC2 to receive sandbox events.
+- `GET /health/metrics` surfaces uptime, DB connectivity, status counts, pending-by-provider breakdown and last-24h volume for dashboards.
 
 ## Managed Postgres (Neon) setup
 
@@ -152,13 +153,18 @@ Once the environment variables are in place, restart the API (`uvicorn`/`gunicor
 ```mermaid
 classDiagram
   class Payment {
-    +str id
+    +int id
     +str buy_order
     +int amount
     +Currency currency
     +PaymentStatus status
+    +PaymentType payment_type
+    +str commerce_id
+    +str product_id
+    +str product_name
     +str? token
     +str? redirect_url
+    +datetime? created_at
     +str? success_url
     +str? failure_url
     +str? cancel_url
@@ -170,8 +176,17 @@ classDiagram
     FAILED
     CANCELED
     REFUNDED
+    TO_CONFIRM
+    ABANDONED
+  }
+  class PaymentType {
+    <<enum>>
+    credito
+    debito
+    prepago
   }
   Payment --> PaymentStatus
+  Payment --> PaymentType
 ```
 
 State machine:
@@ -182,6 +197,10 @@ stateDiagram-v2
   PENDING --> AUTHORIZED: commit response_code == 0
   PENDING --> FAILED: commit response_code != 0
   PENDING --> CANCELED: TBK_TOKEN cancel
+  PENDING --> TO_CONFIRM: async PSP pending state
+  TO_CONFIRM --> AUTHORIZED: reconciled success
+  TO_CONFIRM --> FAILED: reconciled failure
+  PENDING --> ABANDONED: scheduler timeout
   AUTHORIZED --> REFUNDED: refund
 ```
 
@@ -196,11 +215,16 @@ stateDiagram-v2
   - `currency` (string):
     - `CLP` for Webpay (Transbank)
     - `USD` recommended for PayPal Sandbox
-  - `return_url` (string): where Webpay will redirect after payment
+  - `payment_type` (string): `credito`, `debito` or `prepago`
+  - `commerce_id` (string): parametric identifier of the commerce/tenant
+  - `product_id` (string): SKU or internal product identifier
+  - `product_name` (string): product name snapshot at purchase time
+  - `company_id` (int) and `company_token` (string): credentials issued for the consuming company
+  - `return_url` (string): where Webpay/PSP will redirect after payment
   - `provider` (string, optional): `webpay` (default), `stripe`, or `paypal`. Unsupported providers return 400.
-  - `success_url` (string, optional): where to redirect the browser after an authorized payment
-  - `failure_url` (string, optional): where to redirect the browser after a failed payment
-  - `cancel_url` (string, optional): where to redirect the browser after a canceled payment
+  - `success_url`, `failure_url`, `cancel_url` (strings, optional): override browser landing pages after the provider returns control
+  - Optional `Idempotency-Key` header keeps retries idempotent per company.
+  - Response includes the redirect payload plus `internal_id` (internal transaction id) and `provider_transaction_id` (PSP reference) for auditing.
 
 Example request:
 
@@ -272,17 +296,20 @@ Code references:
 3) GET `/health`
 - Simple liveness check. Returns `{ "status": "ok" }`.
 
-4) POST `/api/payments/stripe/webhook`
+4) GET `/health/metrics`
+- Observability endpoint returning uptime, database connectivity, per-status counters, pending backlog by provider and last-24h volume. Ideal for dashboards.
+
+5) POST `/api/payments/stripe/webhook`
 - Receives Stripe events, verifies the signature, and updates the payment state based on the Checkout Session id.
 - Use for production-grade confirmation of Stripe payments.
 - Local dev: `stripe listen --forward-to http://localhost:8000/api/payments/stripe/webhook` and set `STRIPE_WEBHOOK_SECRET`.
 
-5) GET `/api/payments/pending`
+6) GET `/api/payments/pending`
 - Returns a list of pending transactions (from PostgreSQL) with minimal fields.
 - Secured with Bearer token.
-6) POST `/api/payments/refund`
+7) POST `/api/payments/refund`
 - Auth: Bearer
-- Body: `{ "token": "...", "amount": <int|null> }`
+- Body: `{ "token": "...", "amount": <int|null>, "company_id": <int>, "company_token": "..." }`
 - Issues a refund with the provider associated to the token.
   - Stripe: refunds the PaymentIntent (amount in minor units for decimal currencies; zero-decimal for CLP). If omitted, full refund.
   - PayPal: refunds the latest capture of the Order (amount in major units; Sandbox typically USD). If omitted, full refund.
@@ -292,7 +319,7 @@ Code references:
 Example request (JSON):
 
 ```json
-{ "token": "01ab...", "amount": 1000 }
+{ "token": "01ab...", "amount": 1000, "company_id": 1, "company_token": "company-token" }
 ```
 
 Example response (JSON):

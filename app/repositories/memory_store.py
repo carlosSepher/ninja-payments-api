@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from app.domain.models import Payment
@@ -16,6 +17,7 @@ class InMemoryPaymentStore:
     def save(self, payment: Payment, token: str, idempotency_key: str | None = None) -> None:
         pid = payment.id or (max(self.by_id.keys(), default=0) + 1)
         payment.id = pid
+        payment.created_at = datetime.now(timezone.utc)
         self.by_id[pid] = payment
         self.by_token[token] = pid
         if idempotency_key:

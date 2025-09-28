@@ -115,6 +115,13 @@ class TransbankWebpayPlusProvider(PaymentProvider):
         )
         token = data["token"]
         redirect_url = data["url"]
+        payment.provider_metadata.update(
+            {
+                "token_ws": token,
+                "session_id": session_id,
+                "buy_order": payment.buy_order,
+            }
+        )
         logger.info(
             "transaction created",
             extra={"buy_order": payment.buy_order, "token": token},
