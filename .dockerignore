@@ -1,0 +1,34 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+.env/
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# Local tooling
+pytest_cache/
+.mypy_cache/
+ruff_cache/
+
+# Docs & tests not needed in runtime image
+/docs/
+/tests/
+/db/
+
+# Misc
+*.log
+
+# Local environment files
+.env
+ninja-payments-api.env
+cloud.env
+deploy/ec2.env
