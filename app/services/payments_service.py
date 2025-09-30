@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from app.config import Settings, settings
 from app.domain.dtos import (
     PaymentCreateRequest,
@@ -27,6 +28,14 @@ class PaymentsService:
         self.logger = logging.getLogger(__name__)
         self.company_store = PgCompanyStore()
         # DB-backed store is the source of truth now
+
+    @staticmethod
+    def _normalize_dt(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     async def create_payment(
         self, request: PaymentCreateRequest, idempotency_key: str | None
@@ -146,6 +155,27 @@ class PaymentsService:
             redirect=redirect,
             internal_id=payment.id,
             provider_transaction_id=token,
+        )
+
+    def list_payments(
+        self,
+        *,
+        provider: str | None = None,
+        status: PaymentStatus | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        limit: int = 200,
+    ) -> list[Payment]:
+        start = self._normalize_dt(start_date)
+        end = self._normalize_dt(end_date)
+        if limit <= 0:
+            limit = 1
+        return self.store.list_filtered(
+            provider=provider,
+            status=status,
+            start=start,
+            end=end,
+            limit=limit,
         )
 
     async def commit_payment(self, token: str) -> PaymentStatusResponse:

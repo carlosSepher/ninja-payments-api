@@ -16,7 +16,7 @@ BEGIN
     CREATE TYPE payments.payment_status AS ENUM ('PENDING','AUTHORIZED','FAILED','CANCELED','REFUNDED','TO_CONFIRM','ABANDONED');
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_method_type') THEN
-    CREATE TYPE payments.payment_method_type AS ENUM ('credito','debito','prepago');
+    CREATE TYPE payments.payment_method_type AS ENUM ('credito','debito','prepago','desconocido');
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'event_type') THEN
     CREATE TYPE payments.event_type AS ENUM (

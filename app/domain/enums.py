@@ -24,3 +24,4 @@ class PaymentType(str, Enum):
     CREDIT = "credito"
     DEBIT = "debito"
     PREPAID = "prepago"
+    DESCONOCIDO = "desconocido"

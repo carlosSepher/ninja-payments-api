@@ -11,6 +11,38 @@ pip install -r requirements.txt
 cp -n .env.example .env 2>/dev/null || copy .env.example .env
 ```
 
+## Cómo correrlo rápido
+
+1. Duplica `.env.example` a `.env` y completa tus credenciales (puedes usar Neon o levantar la base local).
+2. (Opcional) Levanta Postgres con los seed incluidos: `docker compose up -d postgres`.
+3. Inicia la API con recarga en caliente: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`.
+4. Comprueba que responde: `curl http://localhost:8000/health` o abre <http://localhost:8000/docs>.
+
+## Run locally
+
+1. Configura `.env` con tus credenciales (ejemplo Neon):
+   ```env
+   API_BEARER_TOKEN=testtoken
+   DB_HOST=ep-nameless-wind-acz07abp-pooler.sa-east-1.aws.neon.tech
+   DB_PORT=5432
+   DB_USER=neondb_owner
+   DB_PASSWORD=********
+   DB_NAME=neondb
+   DB_SCHEMA=payments
+   ```
+2. (Opcional) Levanta Postgres local con los datos seed del proyecto:
+   ```bash
+   docker compose up -d postgres
+   ```
+3. Ejecuta la API con recarga en caliente:
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+4. Verifica el estado:
+   ```bash
+   curl http://localhost:8000/health
+   ```
+
 ## Usage
 
 Create a payment:
@@ -36,6 +68,14 @@ Transbank will call `/api/payments/tbk/return` with `token_ws` (authorized/faile
 or `cancel_url`, the API will redirect the browser (303) to those URLs appending
 `status` and `buy_order` as query parameters. Otherwise, the API returns a JSON
 with the final status.
+
+## API documentation
+
+- Swagger UI: <http://localhost:8000/docs>
+- ReDoc: <http://localhost:8000/redoc>
+- OpenAPI JSON: <http://localhost:8000/openapi.json>
+
+FastAPI expone estas rutas automáticamente a partir de los routers definidos en el proyecto, por lo que no se requiere configuración adicional para visualizarlas.
 
 ## Tests
 
@@ -268,7 +308,16 @@ Code references:
 - Stripe create (Checkout Session): app/providers/stripe_checkout.py:19
 - PayPal create (Orders v2): app/providers/paypal_checkout.py:19
 
-2) GET/POST `/api/payments/tbk/return` (Transbank Return)
+2) GET `/api/payments` (Consulta de movimientos)
+- Auth: Bearer token.
+- Filtros opcionales vía query string:
+  - `provider`: `webpay`, `stripe`, `paypal`.
+  - `status`: `PENDING`, `AUTHORIZED`, `FAILED`, `CANCELED`, `REFUNDED`, `TO_CONFIRM`, `ABANDONED`.
+  - `start_date` y `end_date`: timestamp ISO-8601 (inclusive) para acotar por `created_at`.
+  - `limit`: máximo de filas (1-500, default 200).
+- Respuesta: lista de `PaymentSummary` con tipo de pago, comercio/producto, identificadores del PSP y fechas.
+
+3) GET/POST `/api/payments/tbk/return` (Transbank Return)
 - Webpay redirects the user’s browser here with either:
   - `token_ws` when authorized or failed
   - `TBK_TOKEN` when canceled
@@ -293,21 +342,21 @@ Code references:
 - Commit service: app/services/payments_service.py:102
 - Webpay commit (SDK): app/providers/transbank_webpay_plus.py:56
 
-3) GET `/health`
+4) GET `/health`
 - Simple liveness check. Returns `{ "status": "ok" }`.
 
-4) GET `/health/metrics`
+5) GET `/health/metrics`
 - Observability endpoint returning uptime, database connectivity, per-status counters, pending backlog by provider and last-24h volume. Ideal for dashboards.
 
-5) POST `/api/payments/stripe/webhook`
+6) POST `/api/payments/stripe/webhook`
 - Receives Stripe events, verifies the signature, and updates the payment state based on the Checkout Session id.
 - Use for production-grade confirmation of Stripe payments.
 - Local dev: `stripe listen --forward-to http://localhost:8000/api/payments/stripe/webhook` and set `STRIPE_WEBHOOK_SECRET`.
 
-6) GET `/api/payments/pending`
-- Returns a list of pending transactions (from PostgreSQL) with minimal fields.
-- Secured with Bearer token.
-7) POST `/api/payments/refund`
+7) GET `/api/payments/pending`
+- Devuelve las transacciones `PENDING` más recientes (límite 200).
+- Requiere Bearer token.
+8) POST `/api/payments/refund`
 - Auth: Bearer
 - Body: `{ "token": "...", "amount": <int|null>, "company_id": <int>, "company_token": "..." }`
 - Issues a refund with the provider associated to the token.
@@ -335,7 +384,7 @@ Code references:
 - Stripe refund: app/providers/stripe_checkout.py:110
 - PayPal refund: app/providers/paypal_checkout.py:138
 
-7) GET `/api/payments/redirect`
+9) GET `/api/payments/redirect`
 - Auth: Bearer
 - Query: `?token=...`
 - Returns the redirect information to resume a pending checkout flow:

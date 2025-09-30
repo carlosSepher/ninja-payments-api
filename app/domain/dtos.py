@@ -15,7 +15,7 @@ class PaymentCreateRequest(BaseModel):
     buy_order: str
     amount: int
     currency: Currency
-    payment_type: PaymentType = Field(..., description="Tipo de pago: credito|debito|prepago")
+    payment_type: PaymentType = Field(..., description="Tipo de pago: credito|debito|prepago|desconocido")
     commerce_id: str = Field(..., min_length=1, description="Identificador interno del comercio")
     product_id: str = Field(..., min_length=1, description="Identificador del producto asociado")
     product_name: str = Field(..., min_length=1, description="Nombre del producto al momento de la transaccion")

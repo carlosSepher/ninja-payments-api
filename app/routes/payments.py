@@ -8,7 +8,9 @@ from typing import Any
 
 import httpx
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi import Response
 from fastapi.responses import RedirectResponse
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
@@ -27,6 +29,8 @@ from app.services.payments_service import PaymentsService
 from app.utils.idempotency import get_idempotency_key
 from app.utils.security import verify_bearer_token
 from app.config import settings
+from app.domain.enums import ProviderName
+from app.domain.models import Payment
 from app.domain.statuses import PaymentStatus
 from app.providers.paypal_checkout import PayPalCheckoutProvider
 
@@ -35,6 +39,41 @@ router = APIRouter(prefix="/api/payments")
 _store = PgPaymentStore()
 _service = PaymentsService(_store)
 logger = logging.getLogger(__name__)
+
+
+def _provider_reference(payment: Payment) -> str | None:
+    metadata = payment.provider_metadata or {}
+    if isinstance(metadata, dict):
+        for key in (
+            "payment_intent_id",
+            "paypal_capture_id",
+            "paypal_order_id",
+            "token_ws",
+            "buy_order",
+        ):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+    return payment.token
+
+
+def _payment_to_summary(payment: Payment) -> PaymentSummary:
+    return PaymentSummary(
+        id=payment.id or 0,
+        buy_order=payment.buy_order,
+        amount=int(payment.amount),
+        currency=payment.currency,
+        status=payment.status,
+        token=payment.token,
+        provider=payment.provider,
+        company_id=payment.company_id,
+        provider_transaction_id=_provider_reference(payment),
+        payment_type=payment.payment_type,
+        commerce_id=payment.commerce_id,
+        product_id=payment.product_id,
+        product_name=payment.product_name,
+        created_at=payment.created_at,
+    )
 
 
 STRIPE_REFUND_EVENTS = {
@@ -541,6 +580,24 @@ def _handle_paypal_dispute_event(
     return token
 
 
+@router.get("", response_model=list[PaymentSummary], dependencies=[Depends(verify_bearer_token)])
+async def list_payments(
+    provider: ProviderName | None = Query(None, description="Filtra por proveedor"),
+    status: PaymentStatus | None = Query(None, description="Filtra por estado"),
+    start_date: datetime | None = Query(None, description="Fecha/hora inicial (inclusive, ISO 8601)"),
+    end_date: datetime | None = Query(None, description="Fecha/hora final (inclusive, ISO 8601)"),
+    limit: int = Query(200, ge=1, le=500, description="Número máximo de registros"),
+) -> list[PaymentSummary]:
+    items = _service.list_payments(
+        provider=provider.value if provider else None,
+        status=status,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+    )
+    return [_payment_to_summary(p) for p in items]
+
+
 @router.post("", response_model=PaymentCreateResponse, dependencies=[Depends(verify_bearer_token)])
 async def create_payment(
     request: PaymentCreateRequest,
@@ -716,52 +773,12 @@ async def tbk_return(request: Request) -> PaymentStatusResponse:
 @router.get("/pending", response_model=list[PaymentSummary], dependencies=[Depends(verify_bearer_token)])
 async def list_pending() -> list[PaymentSummary]:
     items = _store.list_pending()
-    return [
-        PaymentSummary(
-            id=p.id,
-            buy_order=p.buy_order,
-            amount=p.amount,
-            currency=p.currency,
-            status=p.status,
-            token=p.token,
-            provider_transaction_id=p.provider_metadata.get("payment_intent_id")
-            if p.provider_metadata
-            else p.token,
-            provider=p.provider,
-            company_id=p.company_id,
-            payment_type=p.payment_type,
-            commerce_id=p.commerce_id,
-            product_id=p.product_id,
-            product_name=p.product_name,
-            created_at=p.created_at,
-        )
-        for p in items
-    ]
+    return [_payment_to_summary(p) for p in items]
 
 @router.get("/all", response_model=list[PaymentSummary], dependencies=[Depends(verify_bearer_token)])
 async def list_all() -> list[PaymentSummary]:
     items = _store.list_all()
-    return [
-        PaymentSummary(
-            id=p.id,
-            buy_order=p.buy_order,
-            amount=p.amount,
-            currency=p.currency,
-            status=p.status,
-            token=p.token,
-            provider_transaction_id=p.provider_metadata.get("payment_intent_id")
-            if p.provider_metadata
-            else p.token,
-            provider=p.provider,
-            company_id=p.company_id,
-            payment_type=p.payment_type,
-            commerce_id=p.commerce_id,
-            product_id=p.product_id,
-            product_name=p.product_name,
-            created_at=p.created_at,
-        )
-        for p in items
-    ]
+    return [_payment_to_summary(p) for p in items]
 
 @router.post("/paypal/webhook")
 async def paypal_webhook(request: Request) -> Response:

@@ -16,6 +16,53 @@ class PgPaymentStore:
     Mirrors the minimal interface used by the service and routes.
     """
 
+    def _hydrate_payment(
+        self,
+        *,
+        pid: int,
+        buy_order: str,
+        amount_minor: int,
+        currency: str,
+        provider: str,
+        status: str,
+        token: str | None,
+        company_id: int | None,
+        payment_type: str | None,
+        commerce_id: str | None,
+        product_id: str | None,
+        product_name: str | None,
+        created_at: datetime | None,
+        provider_metadata: Any | None,
+        success_url: str | None = None,
+        failure_url: str | None = None,
+        cancel_url: str | None = None,
+    ) -> Payment:
+        payment = Payment(
+            buy_order=str(buy_order),
+            amount=int(amount_minor),
+            currency=Currency(str(currency)),
+            provider=str(provider) if provider else None,
+            payment_type=PaymentType(str(payment_type)) if payment_type else None,
+            commerce_id=str(commerce_id) if commerce_id else None,
+            product_id=str(product_id) if product_id else None,
+            product_name=str(product_name) if product_name else None,
+            success_url=success_url,
+            failure_url=failure_url,
+            cancel_url=cancel_url,
+        )
+        payment.status = PaymentStatus(str(status))
+        payment.id = int(pid)
+        payment.token = str(token) if token else None
+        if company_id is not None:
+            payment.company_id = int(company_id)
+        payment.created_at = created_at
+        if provider_metadata:
+            try:
+                payment.provider_metadata = dict(provider_metadata)
+            except Exception:  # noqa: BLE001
+                payment.provider_metadata = provider_metadata
+        return payment
+
     def save(self, payment: Payment, token: str, idempotency_key: str | None = None) -> None:
         with get_conn() as conn:
             if conn is None:
@@ -128,31 +175,32 @@ class PgPaymentStore:
                     provider_metadata,
                     context,
                 ) = row
-                p = Payment(
+                payment = self._hydrate_payment(
+                    pid=int(pid),
                     buy_order=str(buy_order),
-                    amount=int(amount_minor),
-                    currency=Currency(str(currency)),
-                    provider=str(provider) if provider else None,
-                    payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                    amount_minor=int(amount_minor),
+                    currency=str(currency),
+                    provider=str(provider) if provider else '',
+                    status=str(status),
+                    token=str(tok) if tok else None,
+                    company_id=int(company_id) if company_id is not None else None,
+                    payment_type=str(payment_type) if payment_type else None,
                     commerce_id=str(commerce_id) if commerce_id else None,
                     product_id=str(product_id) if product_id else None,
                     product_name=str(product_name) if product_name else None,
+                    created_at=created_at,
+                    provider_metadata=provider_metadata,
                     success_url=success_url,
                     failure_url=failure_url,
                     cancel_url=cancel_url,
                 )
-                p.status = PaymentStatus(str(status))
-                p.id = int(pid)
-                p.token = str(tok)
-                p.redirect_url = redirect_url
-                if company_id is not None:
-                    p.company_id = int(company_id)
-                p.created_at = created_at
-                if provider_metadata:
-                    p.provider_metadata = dict(provider_metadata)
+                payment.redirect_url = redirect_url
                 if context:
-                    p.context = dict(context)
-                return p
+                    try:
+                        payment.context = dict(context)
+                    except Exception:  # noqa: BLE001
+                        payment.context = context
+                return payment
 
     def get_by_idempotency(self, idempotency_key: str, company_id: int | None = None) -> Optional[Payment]:
         with get_conn() as conn:
@@ -211,31 +259,32 @@ class PgPaymentStore:
                     provider_metadata,
                     context,
                 ) = row
-                p = Payment(
+                payment = self._hydrate_payment(
+                    pid=int(pid),
                     buy_order=str(buy_order),
-                    amount=int(amount_minor),
-                    currency=Currency(str(currency)),
-                    provider=str(provider) if provider else None,
-                    payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                    amount_minor=int(amount_minor),
+                    currency=str(currency),
+                    provider=str(provider) if provider else '',
+                    status=str(status),
+                    token=str(tok) if tok else None,
+                    company_id=int(comp_id) if comp_id is not None else None,
+                    payment_type=str(payment_type) if payment_type else None,
                     commerce_id=str(commerce_id) if commerce_id else None,
                     product_id=str(product_id) if product_id else None,
                     product_name=str(product_name) if product_name else None,
+                    created_at=created_at,
+                    provider_metadata=provider_metadata,
                     success_url=success_url,
                     failure_url=failure_url,
                     cancel_url=cancel_url,
                 )
-                p.status = PaymentStatus(str(status))
-                p.id = int(pid)
-                p.token = str(tok)
-                p.redirect_url = redirect_url
-                if comp_id is not None:
-                    p.company_id = int(comp_id)
-                p.created_at = created_at
-                if provider_metadata:
-                    p.provider_metadata = dict(provider_metadata)
+                payment.redirect_url = redirect_url
                 if context:
-                    p.context = dict(context)
-                return p
+                    try:
+                        payment.context = dict(context)
+                    except Exception:  # noqa: BLE001
+                        payment.context = context
+                return payment
 
     def update_provider_metadata(self, *, provider: str, token: str, metadata: dict[str, Any]) -> None:
         if not metadata:
@@ -340,7 +389,7 @@ class PgPaymentStore:
                 cur.execute(
                     """
                     SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
-                           payment_type, commerce_id, product_id, product_name, created_at
+                           payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
                       FROM payment
                      WHERE status = 'PENDING'
                      ORDER BY created_at DESC
@@ -362,24 +411,25 @@ class PgPaymentStore:
                         product_id,
                         product_name,
                         created_at,
+                        provider_metadata,
                     ) = row
-                    p = Payment(
+                    payment = self._hydrate_payment(
+                        pid=int(pid),
                         buy_order=str(buy_order),
-                        amount=int(amount_minor),
-                        currency=Currency(str(currency)),
-                        provider=str(provider) if provider else None,
-                        payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                        amount_minor=int(amount_minor),
+                        currency=str(currency),
+                        provider=str(provider) if provider else '',
+                        status=str(status),
+                        token=str(tok) if tok else None,
+                        company_id=int(company_id) if company_id is not None else None,
+                        payment_type=str(payment_type) if payment_type else None,
                         commerce_id=str(commerce_id) if commerce_id else None,
                         product_id=str(product_id) if product_id else None,
                         product_name=str(product_name) if product_name else None,
+                        created_at=created_at,
+                        provider_metadata=provider_metadata,
                     )
-                    p.id = int(pid)
-                    p.status = PaymentStatus(str(status))
-                    p.token = str(tok) if tok else None
-                    if company_id is not None:
-                        p.company_id = int(company_id)
-                    p.created_at = created_at
-                    items.append(p)
+                    items.append(payment)
         return items
 
     def list_all(self) -> list[Payment]:
@@ -391,7 +441,7 @@ class PgPaymentStore:
                 cur.execute(
                     """
                     SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
-                           payment_type, commerce_id, product_id, product_name, created_at
+                           payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
                       FROM payment
                      ORDER BY created_at DESC
                      LIMIT 200
@@ -412,24 +462,103 @@ class PgPaymentStore:
                         product_id,
                         product_name,
                         created_at,
+                        provider_metadata,
                     ) = row
-                    p = Payment(
+                    payment = self._hydrate_payment(
+                        pid=int(pid),
                         buy_order=str(buy_order),
-                        amount=int(amount_minor),
-                        currency=Currency(str(currency)),
-                        provider=str(provider) if provider else None,
-                        payment_type=PaymentType(str(payment_type)) if payment_type else None,
+                        amount_minor=int(amount_minor),
+                        currency=str(currency),
+                        provider=str(provider) if provider else '',
+                        status=str(status),
+                        token=str(tok) if tok else None,
+                        company_id=int(company_id) if company_id is not None else None,
+                        payment_type=str(payment_type) if payment_type else None,
                         commerce_id=str(commerce_id) if commerce_id else None,
                         product_id=str(product_id) if product_id else None,
                         product_name=str(product_name) if product_name else None,
+                        created_at=created_at,
+                        provider_metadata=provider_metadata,
                     )
-                    p.id = int(pid)
-                    p.status = PaymentStatus(str(status))
-                    p.token = str(tok) if tok else None
-                    if company_id is not None:
-                        p.company_id = int(company_id)
-                    p.created_at = created_at
-                    items.append(p)
+                    items.append(payment)
+        return items
+
+    def list_filtered(
+        self,
+        *,
+        provider: str | None = None,
+        status: PaymentStatus | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 200,
+    ) -> list[Payment]:
+        items: list[Payment] = []
+        with get_conn() as conn:
+            if conn is None:
+                return items
+            with conn.cursor() as cur:
+                base = (
+                    """
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
+                           payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
+                      FROM payment
+                    """
+                )
+                conditions: list[str] = []
+                params: list[Any] = []
+                if provider:
+                    conditions.append("provider = %s")
+                    params.append(provider)
+                if status:
+                    conditions.append("status = %s")
+                    params.append(status.value)
+                if start:
+                    conditions.append("created_at >= %s")
+                    params.append(start)
+                if end:
+                    conditions.append("created_at <= %s")
+                    params.append(end)
+                if conditions:
+                    base += " WHERE " + " AND ".join(conditions)
+                base += " ORDER BY created_at DESC"
+                if limit:
+                    base += " LIMIT %s"
+                    params.append(limit)
+                cur.execute(base, tuple(params))
+                for row in cur.fetchall() or []:
+                    (
+                        pid,
+                        buy_order,
+                        amount_minor,
+                        currency,
+                        provider_value,
+                        status_value,
+                        tok,
+                        company_id,
+                        payment_type,
+                        commerce_id,
+                        product_id,
+                        product_name,
+                        created_at,
+                        provider_metadata,
+                    ) = row
+                    payment = self._hydrate_payment(
+                        pid=int(pid),
+                        buy_order=str(buy_order),
+                        amount_minor=int(amount_minor),
+                        currency=str(currency),
+                        provider=str(provider_value) if provider_value else '',
+                        status=str(status_value),
+                        token=str(tok) if tok else None,
+                        company_id=int(company_id) if company_id is not None else None,
+                        payment_type=str(payment_type) if payment_type else None,
+                        commerce_id=str(commerce_id) if commerce_id else None,
+                        product_id=str(product_id) if product_id else None,
+                        product_name=str(product_name) if product_name else None,
+                        created_at=created_at,
+                        provider_metadata=provider_metadata,
+                    )
+                    items.append(payment)
         return items
 
 
