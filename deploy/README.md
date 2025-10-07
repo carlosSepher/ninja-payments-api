@@ -48,7 +48,7 @@ Clone or copy this repository to the instance (e.g. `/opt/ninja-payments-api`). 
    cp deploy/ec2.env.example deploy/ec2.env
    nano deploy/ec2.env
    ```
-   - Set `API_BEARER_TOKEN` to the generated 64-hex value already committed in `.env` (`34374c459194a6161042971d990b63c4556c3ca319190774726830a66de41f19`) **or rotate it to a new random value** and update any clients accordingly.
+   - Set `API_BASIC_USERNAME` / `API_BASIC_PASSWORD` to match the credentials you want to require for the admin endpoints (rotate them periodically and share securely with clients).
    - Keep any secrets (DB, payment providers) in this file; never bake them into the image.
 
 2. Protect the file:
@@ -122,6 +122,6 @@ Docker will recreate the container with zero-downtime restart thanks to `restart
 
 ## 8. Security reminders
 
-- Rotate the bearer token periodically; update any consumers to match `Authorization: Bearer <token>`.
+- Rotate the HTTP Basic credentials periodically; update any consumers to match the new username/password pair.
 - Restrict SSH and Docker daemon access to trusted administrators only.
 - Keep the EC2 instance patched (`sudo apt-get upgrade` regularly).

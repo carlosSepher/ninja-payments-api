@@ -1,8 +1,8 @@
 {
   "info": {
-    "name": "ninja-payments-api (hardcoded)",
-    "_postman_id": "27c7f0d2-1f77-4c42-8d3f-2d2e6a7a9b1a",
-    "description": "Colección para probar ninja-payments-api con URLs fijas y sin variables.",
+    "name": "Ninja Payments API (sin variables)",
+    "_postman_id": "b9035d2a-1a23-4eb5-9bc0-5ad671b3f90a",
+    "description": "Colección lista para usar contra la API sin variables de entorno y con cabeceras completas.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -11,22 +11,110 @@
       "request": {
         "method": "GET",
         "header": [],
-        "url": { "raw": "http://localhost:8000/health" }
+        "url": {
+          "raw": "http://localhost:8000/health",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["health"]
+        }
       }
     },
     {
-      "name": "Create Payment",
+      "name": "List Payments",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Basic bmluamE6cGF5bWVudHM=",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8000/api/payments?limit=50",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments"],
+          "query": [
+            { "key": "limit", "value": "50" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Pending Payments",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Basic bmluamE6cGF5bWVudHM=",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8000/api/payments/pending",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "pending"]
+        }
+      }
+    },
+    {
+      "name": "List All Payments",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Basic bmluamE6cGF5bWVudHM=",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8000/api/payments/all",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "all"]
+        }
+      }
+    },
+    {
+      "name": "Create Payment (Stripe)",
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Authorization", "value": "Bearer dev-token", "type": "text" },
-          { "key": "Content-Type", "value": "application/json", "type": "text" }
+          {
+            "key": "Authorization",
+            "value": "Basic bmluamE6cGF5bWVudHM=",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"buy_order\": \"o-123\",\n  \"amount\": 1000,\n  \"currency\": \"CLP\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"provider\": \"webpay\",\n  \"success_url\": \"http://localhost:3000/checkout/success\",\n  \"failure_url\": \"http://localhost:3000/checkout/failure\",\n  \"cancel_url\": \"http://localhost:3000/checkout/canceled\"\n}"
+          "raw": "{\n  \"buy_order\": \"o-117\",\n  \"amount\": 25000,\n  \"currency\": \"CLP\",\n  \"payment_type\": \"credito\",\n  \"commerce_id\": \"commerce-001\",\n  \"product_id\": \"product-001\",\n  \"product_name\": \"Suscripcion Mensual\",\n  \"customer_rut\": \"12.345.678-9\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"provider\": \"stripe\",\n  \"company_id\": 1,\n  \"company_token\": \"p3V8qL1Zy9NwR6tX0aHbJ2mQ4sUfD8Ee\",\n  \"success_url\": \"https://merchant.test/success\",\n  \"failure_url\": \"https://merchant.test/failure\",\n  \"cancel_url\": \"https://merchant.test/cancel\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
-        "url": { "raw": "http://localhost:8000/api/payments" }
+        "url": {
+          "raw": "http://localhost:8000/api/payments",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments"]
+        }
       }
     },
     {
@@ -34,46 +122,184 @@
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Authorization", "value": "Bearer dev-token", "type": "text" },
-          { "key": "Content-Type", "value": "application/json", "type": "text" }
+          {
+            "key": "Authorization",
+            "value": "Basic bmluamE6cGF5bWVudHM=",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"buy_order\": \"o-pp-123\",\n  \"amount\": 1000,\n  \"currency\": \"USD\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"provider\": \"paypal\",\n  \"success_url\": \"http://localhost:3000/success.html\",\n  \"failure_url\": \"http://localhost:3000/failure.html\",\n  \"cancel_url\": \"http://localhost:8000/api/payments/tbk/return?paypal_cancel=1\"\n}"
+          "raw": "{\n  \"buy_order\": \"o-pp-990\",\n  \"amount\": 120,\n  \"currency\": \"USD\",\n  \"payment_type\": \"credito\",\n  \"commerce_id\": \"commerce-001\",\n  \"product_id\": \"product-002\",\n  \"product_name\": \"Membresia Internacional\",\n  \"customer_rut\": \"12.345.678-9\",\n  \"return_url\": \"http://localhost:8000/api/payments/tbk/return\",\n  \"provider\": \"paypal\",\n  \"company_id\": 1,\n  \"company_token\": \"p3V8qL1Zy9NwR6tX0aHbJ2mQ4sUfD8Ee\",\n  \"success_url\": \"https://merchant.test/success\",\n  \"failure_url\": \"https://merchant.test/failure\",\n  \"cancel_url\": \"https://merchant.test/cancel\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
-        "url": { "raw": "http://localhost:8000/api/payments" }
+        "url": {
+          "raw": "http://localhost:8000/api/payments",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments"]
+        }
       }
     },
     {
-      "name": "Return Commit (GET)",
+      "name": "Get Redirect Info",
       "request": {
         "method": "GET",
-        "header": [],
-        "url": { "raw": "http://localhost:8000/api/payments/tbk/return?token_ws=REPLACE_WITH_TOKEN" }
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Basic bmluamE6cGF5bWVudHM=",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8000/api/payments/redirect?token=demo-payment-token",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "redirect"],
+          "query": [
+            { "key": "token", "value": "demo-payment-token" }
+          ]
+        }
       }
     },
     {
-      "name": "Return Cancel (GET)",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": { "raw": "http://localhost:8000/api/payments/tbk/return?TBK_TOKEN=REPLACE_WITH_TOKEN" }
-      }
-    },
-    {
-      "name": "Return Commit (POST form)",
+      "name": "Request Refund",
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Content-Type", "value": "application/x-www-form-urlencoded", "type": "text" }
+          {
+            "key": "Authorization",
+            "value": "Basic bmluamE6cGF5bWVudHM=",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"demo-payment-token\",\n  \"amount\": 25000,\n  \"company_id\": 1,\n  \"company_token\": \"p3V8qL1Zy9NwR6tX0aHbJ2mQ4sUfD8Ee\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8000/api/payments/refund",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "refund"]
+        }
+      }
+    },
+    {
+      "name": "TBK Return Commit (GET)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/api/payments/tbk/return?token_ws=demo-token",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "tbk", "return"],
+          "query": [
+            { "key": "token_ws", "value": "demo-token" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "TBK Return Cancel (GET)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/api/payments/tbk/return?TBK_TOKEN=demo-token",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "tbk", "return"],
+          "query": [
+            { "key": "TBK_TOKEN", "value": "demo-token" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "TBK Return Commit (POST form)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded",
+            "type": "text"
+          }
         ],
         "body": {
           "mode": "urlencoded",
           "urlencoded": [
-            { "key": "token_ws", "value": "REPLACE_WITH_TOKEN", "type": "text" }
+            { "key": "token_ws", "value": "demo-token", "type": "text" }
           ]
         },
-        "url": { "raw": "http://localhost:8000/api/payments/tbk/return" }
+        "url": {
+          "raw": "http://localhost:8000/api/payments/tbk/return",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "tbk", "return"]
+        }
+      }
+    },
+    {
+      "name": "Stripe Webhook - charge.dispute.created",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Stripe-Signature",
+            "value": "t=0,v1=test-signature",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"evt_test_dispute\",\n  \"object\": \"event\",\n  \"type\": \"charge.dispute.created\",\n  \"data\": {\n    \"object\": {\n      \"id\": \"dp_test\",\n      \"object\": \"dispute\",\n      \"payment_intent\": \"pi_3SDDVTEhvxV2HrWs13JEanjA\",\n      \"charge\": \"ch_test\",\n      \"status\": \"needs_response\",\n      \"amount\": 25000,\n      \"currency\": \"clp\",\n      \"reason\": \"fraudulent\",\n      \"metadata\": {\n        \"buy_order\": \"o-117\",\n        \"company_id\": \"1\"\n      },\n      \"created\": 1733186400\n    }\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8000/api/payments/stripe/webhook",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["api", "payments", "stripe", "webhook"]
+        }
       }
     }
   ]
