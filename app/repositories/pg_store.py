@@ -73,15 +73,16 @@ class PgPaymentStore:
                 # Ensure order exists (per company)
                 cur.execute(
                     """
-                    INSERT INTO payment_order (buy_order, company_id, environment, currency, amount_expected_minor, status, metadata, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, 'OPEN', '{}'::jsonb, NOW(), NOW())
+                    INSERT INTO payment_order (buy_order, company_id, environment, currency, amount_expected_minor, customer_rut, status, metadata, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', '{}'::jsonb, NOW(), NOW())
                     ON CONFLICT (company_id, buy_order) DO UPDATE
                         SET currency = EXCLUDED.currency,
                             amount_expected_minor = EXCLUDED.amount_expected_minor,
+                            customer_rut = COALESCE(EXCLUDED.customer_rut, payment_order.customer_rut),
                             updated_at = NOW()
                     RETURNING id
                     """,
-                    (payment.buy_order, payment.company_id, 'test', payment.currency.value, payment.amount),
+                    (payment.buy_order, payment.company_id, 'test', payment.currency.value, payment.amount, getattr(payment, 'customer_rut', None)),
                 )
                 row = cur.fetchone()
                 order_id = row[0] if row else None

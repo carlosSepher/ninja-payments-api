@@ -88,12 +88,12 @@ CREATE TABLE IF NOT EXISTS payments.payment_order (
   environment             payments.environment_type NOT NULL DEFAULT 'test',
   currency                varchar(3) CHECK (currency IS NULL OR char_length(currency)=3),
   amount_expected_minor   bigint CHECK (amount_expected_minor IS NULL OR amount_expected_minor > 0),
+  customer_rut          text,
   status                  payments.order_status NOT NULL DEFAULT 'OPEN',
   metadata                jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at              timestamptz NOT NULL DEFAULT now(),
   updated_at              timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (company_id, buy_order)
-);
+  UNIQUE (company_id, buy_order));
 CREATE INDEX IF NOT EXISTS ix_payment_order_created_at ON payments.payment_order(created_at);
 CREATE INDEX IF NOT EXISTS ix_payment_order_status ON payments.payment_order(status);
 CREATE INDEX IF NOT EXISTS ix_payment_order_company ON payments.payment_order(company_id);

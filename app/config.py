@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     """Application configuration read from environment variables."""
 
     # General
+    api_basic_username: str = "ninja"
+    api_basic_password: str = "payments"
     api_bearer_token: str = "testtoken"
     provider: str = "transbank"
 

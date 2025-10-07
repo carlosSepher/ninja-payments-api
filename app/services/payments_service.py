@@ -114,6 +114,7 @@ class PaymentsService:
             commerce_id=request.commerce_id,
             product_id=request.product_id,
             product_name=request.product_name or request.buy_order,
+            customer_rut=getattr(request, 'customer_rut', None),
             success_url=request.success_url,
             failure_url=request.failure_url,
             cancel_url=request.cancel_url,

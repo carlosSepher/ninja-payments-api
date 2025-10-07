@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import pathlib
 import sys
 
@@ -52,7 +53,9 @@ def test_payment_flow() -> None:
         "company_id": 1,
         "company_token": "company-token",
     }
-    headers = {"Authorization": f"Bearer {settings.api_bearer_token}", "Idempotency-Key": "123"}
+    token_raw = f"{settings.api_basic_username}:{settings.api_basic_password}".encode()
+    auth_value = base64.b64encode(token_raw).decode()
+    headers = {"Authorization": f"Basic {auth_value}", "Idempotency-Key": "123"}
     response = client.post("/api/payments", json=payload, headers=headers)
     assert response.status_code == 200
     token = response.json()["redirect"]["token"]

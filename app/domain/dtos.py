@@ -38,6 +38,10 @@ class PaymentCreateRequest(BaseModel):
     )
 
 
+    customer_rut: str | None = Field(
+        default=None, description="RUT del cliente asociado a la orden (opcional)"
+    )
+
 class RedirectInfo(BaseModel):
     """Information needed to redirect the user to Webpay."""
 
