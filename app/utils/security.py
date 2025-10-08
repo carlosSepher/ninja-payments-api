@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import Depends, Header, HTTPException, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBasic,
+    HTTPBasicCredentials,
+    HTTPBearer,
+)
 
 from app.config import settings
 
 
 _basic_scheme = HTTPBasic()
+_bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 
 
 def require_basic_auth(credentials: HTTPBasicCredentials = Depends(_basic_scheme)) -> None:
@@ -25,16 +31,18 @@ def require_basic_auth(credentials: HTTPBasicCredentials = Depends(_basic_scheme
 
 
 
-def verify_bearer_token(authorization: str | None = Header(None)) -> None:
+def verify_bearer_token(
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+) -> None:
     """Validate Bearer token matches configured API token."""
 
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization[7:].strip()
+    token = credentials.credentials.strip()
     if not token or not secrets.compare_digest(token, settings.api_bearer_token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
