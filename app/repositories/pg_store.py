@@ -491,6 +491,7 @@ class PgPaymentStore:
         status: PaymentStatus | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
+        token: str | None = None,
         limit: int = 200,
     ) -> list[Payment]:
         items: list[Payment] = []
@@ -519,6 +520,9 @@ class PgPaymentStore:
                 if end:
                     conditions.append("created_at <= %s")
                     params.append(end)
+                if token:
+                    conditions.append("token = %s")
+                    params.append(token)
                 if conditions:
                     base += " WHERE " + " AND ".join(conditions)
                 base += " ORDER BY created_at DESC"
