@@ -586,6 +586,7 @@ async def list_payments(
     status: PaymentStatus | None = Query(None, description="Filtra por estado"),
     start_date: datetime | None = Query(None, description="Fecha/hora inicial (inclusive, ISO 8601)"),
     end_date: datetime | None = Query(None, description="Fecha/hora final (inclusive, ISO 8601)"),
+    token: str | None = Query(None, description="Filtra por token exacto"),
     limit: int = Query(200, ge=1, le=500, description="Número máximo de registros"),
 ) -> list[PaymentSummary]:
     items = _service.list_payments(
@@ -593,6 +594,7 @@ async def list_payments(
         status=status,
         start_date=start_date,
         end_date=end_date,
+        token=token,
         limit=limit,
     )
     return [_payment_to_summary(p) for p in items]

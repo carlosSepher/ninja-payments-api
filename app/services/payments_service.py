@@ -165,6 +165,7 @@ class PaymentsService:
         status: PaymentStatus | None = None,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        token: str | None = None,
         limit: int = 200,
     ) -> list[Payment]:
         start = self._normalize_dt(start_date)
@@ -176,6 +177,7 @@ class PaymentsService:
             status=status,
             start=start,
             end=end,
+            token=token,
             limit=limit,
         )
 
