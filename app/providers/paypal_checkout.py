@@ -345,7 +345,7 @@ class PayPalCheckoutProvider(PaymentProvider):
         # CREATED, APPROVED, PAYER_ACTION_REQUIRED -> pending
         return PaymentStatus.PENDING
 
-    async def refund(self, token: str, amount: int | None = None) -> ProviderRefundResult:
+    async def refund(self, token: str, amount: Decimal | None = None) -> ProviderRefundResult:
         access_token = await self._get_access_token()
         # Retrieve order to find capture id
         order_url = f"{self.base_url}/v2/checkout/orders/{token}"
@@ -416,9 +416,11 @@ class PayPalCheckoutProvider(PaymentProvider):
             currency = (order.get("purchase_units") or [{}])[0].get("amount", {}).get("currency_code", "USD")
             zero_decimal = {"CLP", "JPY", "VND", "KRW"}
             if currency in zero_decimal:
-                value_str = str(int(amount))
+                quantized = amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                value_str = str(int(quantized))
             else:
-                value_str = str(Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                quantized = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                value_str = format(quantized, "f")
             body = {"amount": {"currency_code": currency, "value": value_str}}
         started_refund = time.monotonic()
         async with httpx.AsyncClient() as client:
@@ -465,9 +467,13 @@ class PayPalCheckoutProvider(PaymentProvider):
             latency_ms=latency_refund,
         )
         amount_value = body.get("amount", {}).get("value") if body else None
-        try:
-            amount_minor = int(amount_value) if amount_value is not None else amount
-        except ValueError:
+        amount_minor: Decimal | None
+        if amount_value is not None:
+            try:
+                amount_minor = Decimal(str(amount_value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            except (InvalidOperation, ValueError):
+                amount_minor = amount
+        else:
             amount_minor = amount
         return ProviderRefundResult(
             ok=status in {"COMPLETED", "PENDING"},

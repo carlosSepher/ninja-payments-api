@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from app.domain.models import Payment
@@ -30,12 +31,11 @@ class PaymentProvider(ABC):
         """
 
     @abstractmethod
-    async def refund(self, token: str, amount: int | None = None) -> ProviderRefundResult:
+    async def refund(self, token: str, amount: Decimal | None = None) -> ProviderRefundResult:
         """Issue a refund where applicable.
 
         - token: provider-specific token/identifier (e.g., session_id / order_id).
-        - amount: optional refund amount. Units follow provider conventions used on create
-          (Stripe minor units like cents for USD; zero-decimal for CLP; PayPal major units).
+        - amount: optional refund amount in major currency units (two decimals when applicable).
         Returns ProviderRefundResult with provider IDs and raw payload when available.
         """
 
@@ -44,7 +44,7 @@ class ProviderRefundResult:
     """Normalized result for provider refund attempts."""
 
     ok: bool
-    amount: int | None = None
+    amount: Decimal | None = None
     provider_refund_id: str | None = None
     status: str | None = None
     payload: dict[str, Any] | None = None
