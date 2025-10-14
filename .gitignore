@@ -218,3 +218,6 @@ cloud.env
 
 deploy/ec2.env
 ninja-payments-api.env
+
+ninja-executive-api/
+.DS_Store

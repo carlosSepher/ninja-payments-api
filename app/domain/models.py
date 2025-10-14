@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from .enums import Currency, PaymentType
@@ -13,7 +14,7 @@ class Payment:
     """Internal representation of a payment."""
 
     buy_order: str
-    amount: int
+    amount: Decimal
     currency: Currency
     id: int | None = None
     status: PaymentStatus = PaymentStatus.PENDING

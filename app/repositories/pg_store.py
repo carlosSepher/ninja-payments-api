@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional, Any
 
 from app.db.client import get_conn
@@ -10,18 +11,34 @@ from app.domain.statuses import PaymentStatus
 from psycopg2.extras import Json
 
 
+MONEY_QUANT = Decimal("0.01")
+
+
 class PgPaymentStore:
     """PostgreSQL-backed store for payments using raw psycopg2.
 
     Mirrors the minimal interface used by the service and routes.
     """
 
+    @staticmethod
+    def _normalize_amount(value: Any | None, *, default: Decimal | None = None) -> Decimal | None:
+        if value is None:
+            return default
+        if isinstance(value, Decimal):
+            amount = value
+        else:
+            try:
+                amount = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError("Invalid monetary amount") from exc
+        return amount.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
     def _hydrate_payment(
         self,
         *,
         pid: int,
         buy_order: str,
-        amount_minor: int,
+        amount_minor: Any,
         currency: str,
         provider: str,
         status: str,
@@ -37,9 +54,12 @@ class PgPaymentStore:
         failure_url: str | None = None,
         cancel_url: str | None = None,
     ) -> Payment:
+        amount_value = self._normalize_amount(amount_minor)
+        if amount_value is None:
+            raise ValueError("Persisted payment amount cannot be NULL")
         payment = Payment(
             buy_order=str(buy_order),
-            amount=int(amount_minor),
+            amount=amount_value,
             currency=Currency(str(currency)),
             provider=str(provider) if provider else None,
             payment_type=PaymentType(str(payment_type)) if payment_type else None,
@@ -70,6 +90,9 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 if payment.company_id is None:
                     raise ValueError("payment.company_id required")
+                amount_value = self._normalize_amount(payment.amount)
+                if amount_value is None:
+                    raise ValueError("payment.amount required")
                 # Ensure order exists (per company)
                 cur.execute(
                     """
@@ -82,7 +105,7 @@ class PgPaymentStore:
                             updated_at = NOW()
                     RETURNING id
                     """,
-                    (payment.buy_order, payment.company_id, 'test', payment.currency.value, payment.amount, getattr(payment, 'customer_rut', None)),
+                    (payment.buy_order, payment.company_id, 'test', payment.currency.value, amount_value, getattr(payment, 'customer_rut', None)),
                 )
                 row = cur.fetchone()
                 order_id = row[0] if row else None
@@ -110,7 +133,7 @@ class PgPaymentStore:
                         order_id,
                         payment.company_id,
                         payment.buy_order,
-                        int(payment.amount),
+                        amount_value,
                         payment.currency.value,
                         (payment.provider or ''),
                         payment.payment_type.value if payment.payment_type else None,
@@ -179,7 +202,7 @@ class PgPaymentStore:
                 payment = self._hydrate_payment(
                     pid=int(pid),
                     buy_order=str(buy_order),
-                    amount_minor=int(amount_minor),
+                    amount_minor=amount_minor,
                     currency=str(currency),
                     provider=str(provider) if provider else '',
                     status=str(status),
@@ -263,7 +286,7 @@ class PgPaymentStore:
                 payment = self._hydrate_payment(
                     pid=int(pid),
                     buy_order=str(buy_order),
-                    amount_minor=int(amount_minor),
+                    amount_minor=amount_minor,
                     currency=str(currency),
                     provider=str(provider) if provider else '',
                     status=str(status),
@@ -417,7 +440,7 @@ class PgPaymentStore:
                     payment = self._hydrate_payment(
                         pid=int(pid),
                         buy_order=str(buy_order),
-                        amount_minor=int(amount_minor),
+                        amount_minor=amount_minor,
                         currency=str(currency),
                         provider=str(provider) if provider else '',
                         status=str(status),
@@ -465,23 +488,23 @@ class PgPaymentStore:
                         created_at,
                         provider_metadata,
                     ) = row
-                    payment = self._hydrate_payment(
-                        pid=int(pid),
-                        buy_order=str(buy_order),
-                        amount_minor=int(amount_minor),
-                        currency=str(currency),
-                        provider=str(provider) if provider else '',
-                        status=str(status),
-                        token=str(tok) if tok else None,
-                        company_id=int(company_id) if company_id is not None else None,
-                        payment_type=str(payment_type) if payment_type else None,
-                        commerce_id=str(commerce_id) if commerce_id else None,
-                        product_id=str(product_id) if product_id else None,
-                        product_name=str(product_name) if product_name else None,
-                        created_at=created_at,
-                        provider_metadata=provider_metadata,
-                    )
-                    items.append(payment)
+                payment = self._hydrate_payment(
+                    pid=int(pid),
+                    buy_order=str(buy_order),
+                    amount_minor=amount_minor,
+                    currency=str(currency),
+                    provider=str(provider) if provider else '',
+                    status=str(status),
+                    token=str(tok) if tok else None,
+                    company_id=int(company_id) if company_id is not None else None,
+                    payment_type=str(payment_type) if payment_type else None,
+                    commerce_id=str(commerce_id) if commerce_id else None,
+                    product_id=str(product_id) if product_id else None,
+                    product_name=str(product_name) if product_name else None,
+                    created_at=created_at,
+                    provider_metadata=provider_metadata,
+                )
+                items.append(payment)
         return items
 
     def list_filtered(
@@ -547,23 +570,23 @@ class PgPaymentStore:
                         created_at,
                         provider_metadata,
                     ) = row
-                    payment = self._hydrate_payment(
-                        pid=int(pid),
-                        buy_order=str(buy_order),
-                        amount_minor=int(amount_minor),
-                        currency=str(currency),
-                        provider=str(provider_value) if provider_value else '',
-                        status=str(status_value),
-                        token=str(tok) if tok else None,
-                        company_id=int(company_id) if company_id is not None else None,
-                        payment_type=str(payment_type) if payment_type else None,
-                        commerce_id=str(commerce_id) if commerce_id else None,
-                        product_id=str(product_id) if product_id else None,
-                        product_name=str(product_name) if product_name else None,
-                        created_at=created_at,
-                        provider_metadata=provider_metadata,
-                    )
-                    items.append(payment)
+                payment = self._hydrate_payment(
+                    pid=int(pid),
+                    buy_order=str(buy_order),
+                    amount_minor=amount_minor,
+                    currency=str(currency),
+                    provider=str(provider_value) if provider_value else '',
+                    status=str(status_value),
+                    token=str(tok) if tok else None,
+                    company_id=int(company_id) if company_id is not None else None,
+                    payment_type=str(payment_type) if payment_type else None,
+                    commerce_id=str(commerce_id) if commerce_id else None,
+                    product_id=str(product_id) if product_id else None,
+                    product_name=str(product_name) if product_name else None,
+                    created_at=created_at,
+                    provider_metadata=provider_metadata,
+                )
+                items.append(payment)
         return items
 
 
@@ -713,7 +736,7 @@ class PgPaymentStore:
         *,
         token: str,
         provider: str,
-        amount: int | None,
+        amount: Decimal | None,
         status: str,
         provider_refund_id: str | None = None,
         payload: dict[str, Any] | None = None,
@@ -730,8 +753,8 @@ class PgPaymentStore:
                 if not row:
                     return
                 payment_id = row[0]
-                amount_int = int(amount)
-                if amount_int <= 0:
+                amount_value = self._normalize_amount(amount)
+                if amount_value is None or amount_value <= Decimal("0.00"):
                     return
                 status_value = (status or "REQUESTED").upper()
                 confirmed_at = None
@@ -750,7 +773,7 @@ class PgPaymentStore:
                     (
                         payment_id,
                         provider,
-                        amount_int,
+                        amount_value,
                         status_value,
                         provider_refund_id,
                         reason,
@@ -766,7 +789,7 @@ class PgPaymentStore:
         provider: str,
         provider_dispute_id: str | None,
         status: str | None = None,
-        amount: int | None = None,
+        amount: Decimal | None = None,
         reason: str | None = None,
         opened_at: datetime | None = None,
         closed_at: datetime | None = None,
@@ -781,7 +804,7 @@ class PgPaymentStore:
                 if not row:
                     return
                 payment_id = row[0]
-                amount_minor = int(amount) if amount is not None else None
+                amount_minor = self._normalize_amount(amount)
                 status_value = status.upper() if status else None
                 cur.execute(
                     """

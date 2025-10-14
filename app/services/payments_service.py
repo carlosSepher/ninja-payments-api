@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from app.config import Settings, settings
 from app.domain.dtos import (
     PaymentCreateRequest,
@@ -270,7 +271,13 @@ class PaymentsService:
         provider = get_provider_by_name(self.settings, provider_name)
         return await provider.status(token)
 
-    async def refund(self, token: str, amount: int | None = None, company_id: int | None = None) -> PaymentStatus:
+    @staticmethod
+    def _quantize_amount(value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    async def refund(self, token: str, amount: Decimal | None = None, company_id: int | None = None) -> PaymentStatus:
         payment = self.store.get_by_token(token)
         if not payment:
             raise ValueError("Unknown token")
@@ -281,28 +288,11 @@ class PaymentsService:
         # For Webpay, default to full refund when amount is omitted
         if provider_name in {"webpay", "transbank"} and (amount is None):
             amount = payment.amount
+        amount = self._quantize_amount(amount)
         result = await provider.refund(token, amount)
-        raw_amount = (
-            result.amount
-            if result.amount is not None
-            else (amount if amount is not None else payment.amount)
+        refund_amount = self._quantize_amount(
+            result.amount if result.amount is not None else (amount if amount is not None else payment.amount)
         )
-        refund_amount: int | None
-        if raw_amount is None:
-            refund_amount = None
-        else:
-            try:
-                refund_amount = int(raw_amount)
-            except (TypeError, ValueError):
-                try:
-                    from decimal import Decimal, InvalidOperation  # local import to avoid global dependency
-
-                    refund_amount = int(Decimal(str(raw_amount)))
-                except (InvalidOperation, ValueError):
-                    refund_amount = None
-        if refund_amount is None:
-            fallback_amount = amount if amount is not None else payment.amount
-            refund_amount = int(fallback_amount)
         refund_status = "SUCCEEDED" if result.ok else "FAILED"
         try:
             self.store.record_refund(

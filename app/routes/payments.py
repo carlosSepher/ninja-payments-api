@@ -8,8 +8,6 @@ from typing import Any
 
 import httpx
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi import Response
 from fastapi.responses import RedirectResponse
@@ -61,7 +59,7 @@ def _payment_to_summary(payment: Payment) -> PaymentSummary:
     return PaymentSummary(
         id=payment.id or 0,
         buy_order=payment.buy_order,
-        amount=int(payment.amount),
+        amount=payment.amount,
         currency=payment.currency,
         status=payment.status,
         token=payment.token,
@@ -189,11 +187,17 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
         if not refund_status:
             refund_status = "succeeded" if event_type == "charge.refunded" else ""
 
-    amount_minor: int | None = None
+    currency_code = str(payload.get("currency") or metadata.get("currency") or "").upper()
+    zero_decimal = {"CLP", "JPY", "VND", "KRW"}
+    amount_minor: Decimal | None = None
     if raw_amount is not None:
         try:
-            amount_minor = int(raw_amount)
-        except (TypeError, ValueError):
+            dec_raw = Decimal(str(raw_amount))
+            if currency_code in zero_decimal:
+                amount_minor = dec_raw.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            else:
+                amount_minor = (dec_raw / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError):
             amount_minor = None
 
     status_value = (
@@ -237,7 +241,7 @@ def _handle_stripe_refund_event(event_type: str, payload: dict[str, Any]) -> str
         should_mark_refunded = True
     elif amount_minor is not None and payment:
         try:
-            should_mark_refunded = amount_minor >= int(payment.amount)
+            should_mark_refunded = amount_minor >= payment.amount
         except (TypeError, ValueError):
             should_mark_refunded = False
     logger.info(
@@ -305,12 +309,17 @@ def _handle_stripe_dispute_event(event_type: str, payload: dict[str, Any]) -> st
     if not token:
         return None
 
-    amount_minor: int | None = None
+    amount_minor: Decimal | None = None
     amount_raw = payload.get("amount")
+    currency_code = str(payload.get("currency") or "").upper()
     if amount_raw is not None:
         try:
-            amount_minor = int(amount_raw)
-        except (TypeError, ValueError):
+            dec_raw = Decimal(str(amount_raw))
+            if currency_code in {"CLP", "JPY", "VND", "KRW"}:
+                amount_minor = dec_raw.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            else:
+                amount_minor = (dec_raw / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError):
             amount_minor = None
 
     opened_at = _stripe_epoch_to_datetime(payload.get("created"))
@@ -494,15 +503,14 @@ def _handle_paypal_dispute_event(
     if not token:
         return None
 
-    amount_minor: int | None = None
+    amount_minor: Decimal | None = None
     amount_info = resource.get("disputed_amount")
     if not isinstance(amount_info, dict):
         amount_info = resource.get("amount") if isinstance(resource.get("amount"), dict) else {}
     value_raw = amount_info.get("value") if isinstance(amount_info, dict) else None
     if value_raw is not None:
         try:
-            quantized = Decimal(str(value_raw)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-            amount_minor = int(quantized)
+            amount_minor = Decimal(str(value_raw)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         except (InvalidOperation, ValueError):
             amount_minor = None
 
@@ -990,7 +998,7 @@ async def paypal_webhook(request: Request) -> Response:
     # Handle refunds: mark store as REFUNDED if we can relate order_id
     if event_upper in {"PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.PARTIALLY_REFUNDED"} and order_id:
         payment = _store.get_by_token(order_id)
-        amount_minor: int | None = None
+        amount_minor: Decimal | None = None
         if payment:
             amount_info = resource.get("amount") or {}
             value_str = amount_info.get("value") if isinstance(amount_info, dict) else None
@@ -998,7 +1006,11 @@ async def paypal_webhook(request: Request) -> Response:
             if value_str is not None:
                 try:
                     dec = Decimal(str(value_str))
-                    amount_minor = int(dec.to_integral_value())
+                    zero_decimal = {"CLP", "JPY", "VND", "KRW"}
+                    if str(currency_code or "").upper() in zero_decimal:
+                        amount_minor = dec.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                    else:
+                        amount_minor = dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 except (InvalidOperation, ValueError):
                     amount_minor = None
             if amount_minor is None:
@@ -1032,7 +1044,12 @@ async def paypal_webhook(request: Request) -> Response:
                 )
             logger.info(
                 "paypal webhook refund applied",
-                extra={"endpoint": "/api/payments/paypal/webhook", "token": order_id, "status": PaymentStatus.REFUNDED.value, "refund_amount": amount_minor},
+                extra={
+                    "endpoint": "/api/payments/paypal/webhook",
+                    "token": order_id,
+                    "status": PaymentStatus.REFUNDED.value,
+                    "refund_amount": amount_minor or Decimal("0.00"),
+                },
             )
         return Response(status_code=200)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Tuple
 
 import stripe  # type: ignore[import-untyped]
@@ -24,6 +25,26 @@ class StripeCheckoutProvider(PaymentProvider):
     commit(): retrieves the Session/PaymentIntent and returns 0 if succeeded.
     """
 
+    ZERO_DECIMAL_CURRENCIES = {"CLP", "JPY", "VND", "KRW"}
+
+    @classmethod
+    def _to_minor_units(cls, amount: Decimal, currency: str) -> int:
+        currency_upper = currency.upper()
+        if currency_upper in cls.ZERO_DECIMAL_CURRENCIES:
+            quantized = amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            return int(quantized)
+        quantized = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        minor_amount = (quantized * Decimal("100")).to_integral_value(rounding=ROUND_HALF_UP)
+        return int(minor_amount)
+
+    @classmethod
+    def _from_minor_units(cls, amount: int, currency: str) -> Decimal:
+        currency_upper = currency.upper()
+        if currency_upper in cls.ZERO_DECIMAL_CURRENCIES:
+            return Decimal(amount).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        value = Decimal(amount) / Decimal("100")
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
     def __init__(self, settings: Settings):
         self.settings = settings
         if not settings.stripe_secret_key:
@@ -36,7 +57,7 @@ class StripeCheckoutProvider(PaymentProvider):
         cancel_url = payment.cancel_url or return_url
 
         currency = payment.currency.value.lower()
-        amount = int(payment.amount)
+        amount = self._to_minor_units(payment.amount, payment.currency.value)
 
         session_kwargs: Dict[str, Any] = {
             "mode": "payment",
@@ -236,7 +257,10 @@ class StripeCheckoutProvider(PaymentProvider):
             return PaymentStatus.AUTHORIZED
         return PaymentStatus.PENDING
 
-    async def refund(self, token: str, amount: int | None = None) -> ProviderRefundResult:
+    async def refund(self, token: str, amount: Decimal | None = None) -> ProviderRefundResult:
+        payment = self.store.get_by_token(token)
+        payment_currency = payment.currency.value if payment and payment.currency else "USD"
+
         def _refund() -> ProviderRefundResult:
             session = stripe.checkout.Session.retrieve(  # type: ignore[call-arg]
                 token, expand=["payment_intent"]
@@ -250,8 +274,9 @@ class StripeCheckoutProvider(PaymentProvider):
                     error="Payment intent missing",
                 )
             args: Dict[str, object] = {"payment_intent": pi.id}
+            currency_code = str(getattr(pi, "currency", "") or "").upper()
             if amount is not None:
-                args["amount"] = int(amount)
+                args["amount"] = self._to_minor_units(amount, currency_code or payment_currency)
             refund = stripe.Refund.create(**args)  # type: ignore[arg-type]
             status = str(getattr(refund, "status", ""))
             refund_id = getattr(refund, "id", None)
@@ -264,11 +289,11 @@ class StripeCheckoutProvider(PaymentProvider):
             if refund_amount is not None:
                 payload["amount"] = refund_amount
             ok = status in {"succeeded", "pending"}
-            record_amount: int | None = None
+            record_amount: Decimal | None = None
             if refund_amount is not None:
-                record_amount = int(refund_amount)
+                record_amount = self._from_minor_units(int(refund_amount), currency_code or payment_currency)
             elif amount is not None:
-                record_amount = int(amount)
+                record_amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             return ProviderRefundResult(
                 ok=ok,
                 amount=record_amount,
@@ -285,7 +310,7 @@ class StripeCheckoutProvider(PaymentProvider):
             latency_ms = int((time.monotonic() - started) * 1000)
             request_payload: Dict[str, Any] = {"token": token}
             if amount is not None:
-                request_payload["amount"] = int(amount)
+                request_payload["amount"] = self._to_minor_units(amount, payment_currency)
             self._log_event(
                 operation="REFUND",
                 request_url="stripe.Refund.create",
@@ -300,7 +325,7 @@ class StripeCheckoutProvider(PaymentProvider):
         latency_ms = int((time.monotonic() - started) * 1000)
         request_payload: Dict[str, Any] = {"token": token}
         if amount is not None:
-            request_payload["amount"] = int(amount)
+            request_payload["amount"] = self._to_minor_units(amount, payment_currency)
         response_body = result.payload or {
             "status": result.status,
             "ok": result.ok,

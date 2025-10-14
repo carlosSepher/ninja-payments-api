@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Tuple
 from uuid import uuid4
 
@@ -40,10 +41,11 @@ class TransbankWebpayPlusProvider(PaymentProvider):
             "Content-Type": "application/json",
         }
         session_id = str(payment.id) if payment.id is not None else uuid4().hex
+        amount_integral = int(payment.amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         payload = {
             "buy_order": payment.buy_order,
             "session_id": session_id,
-            "amount": payment.amount,
+            "amount": amount_integral,
             "return_url": return_url,
         }
         started = time.monotonic()
@@ -224,14 +226,14 @@ class TransbankWebpayPlusProvider(PaymentProvider):
         )
         return mapped
 
-    async def refund(self, token: str, amount: int | None = None) -> ProviderRefundResult:
+    async def refund(self, token: str, amount: Decimal | None = None) -> ProviderRefundResult:
         """Issue a refund/nullification for Webpay Plus.
 
         Uses REST endpoint: POST /transactions/{token}/refunds with JSON { amount }.
         Consider success when response contains response_code == 0 or a
         refund type of REVERSED/NULLIFIED.
         """
-        if amount is None or amount <= 0:
+        if amount is None or amount <= Decimal("0"):
             # Service is expected to default amount; keep provider safe.
             logger.info(
                 "refund amount invalid",
@@ -250,7 +252,8 @@ class TransbankWebpayPlusProvider(PaymentProvider):
             "Tbk-Api-Key-Secret": self.settings.tbk_api_key_secret,
             "Content-Type": "application/json",
         }
-        payload = {"amount": int(amount)}
+        int_amount = int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        payload = {"amount": int_amount}
         started = time.monotonic()
         response_status: int | None = None
         response_headers: Dict[str, str] | None = None
@@ -309,7 +312,7 @@ class TransbankWebpayPlusProvider(PaymentProvider):
         )
         return ProviderRefundResult(
             ok=bool(ok),
-            amount=int(amount),
+            amount=amount.quantize(Decimal("0.01")),
             provider_refund_id=str(data.get("authorization_code", "")) or None,
             status=str(refund_type or ""),
             payload=data,

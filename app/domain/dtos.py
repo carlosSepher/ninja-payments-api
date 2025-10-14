@@ -1,19 +1,36 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Any, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from .enums import Currency, PaymentType, ProviderName
 from .statuses import PaymentStatus
+
+
+_MONEY_QUANT = Decimal("0.01")
+
+
+def _normalize_money(value: Any) -> Decimal:
+    if isinstance(value, Decimal):
+        amount = value
+    else:
+        try:
+            amount = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("Invalid monetary amount") from exc
+    if amount <= 0:
+        raise ValueError("Amount must be positive")
+    return amount.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 
 class PaymentCreateRequest(BaseModel):
     """Request body for creating a payment."""
 
     buy_order: str
-    amount: int
+    amount: Decimal
     currency: Currency
     payment_type: PaymentType = Field(..., description="Tipo de pago: credito|debito|prepago|desconocido")
     commerce_id: str = Field(..., min_length=1, description="Identificador interno del comercio")
@@ -37,10 +54,14 @@ class PaymentCreateRequest(BaseModel):
         default=None, description="Front URL to redirect when canceled"
     )
 
-
     customer_rut: str | None = Field(
         default=None, description="RUT del cliente asociado a la orden (opcional)"
     )
+
+    @validator("amount", pre=True)
+    def _validate_amount(cls, value: Any) -> Decimal:  # noqa: D417
+        return _normalize_money(value)
+
 
 class RedirectInfo(BaseModel):
     """Information needed to redirect the user to Webpay."""
@@ -71,7 +92,7 @@ class PaymentStatusResponse(BaseModel):
 class PaymentSummary(BaseModel):
     id: int
     buy_order: str
-    amount: int
+    amount: Decimal
     currency: Currency
     status: PaymentStatus
     token: str | None = None
@@ -104,9 +125,15 @@ class StatusCheckResult(BaseModel):
 
 class RefundRequest(BaseModel):
     token: str
-    amount: int | None = None
+    amount: Decimal | None = None
     company_id: int
     company_token: str
+
+    @validator("amount", pre=True, always=True)
+    def _validate_optional_amount(cls, value: Any) -> Decimal | None:  # noqa: D417
+        if value is None:
+            return None
+        return _normalize_money(value)
 
 
 class RefundResponse(BaseModel):
