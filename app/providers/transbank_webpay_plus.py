@@ -11,6 +11,7 @@ import httpx
 from transbank.common.integration_type import IntegrationType  # type: ignore[import-untyped]
 from transbank.common.options import WebpayOptions  # type: ignore[import-untyped]
 from transbank.webpay.webpay_plus.transaction import Transaction  # type: ignore[import-untyped]
+from transbank.error.transaction_commit_error import TransactionCommitError  # type: ignore[import-untyped]
 
 from app.config import Settings
 from app.domain.models import Payment
@@ -134,6 +135,27 @@ class TransbankWebpayPlusProvider(PaymentProvider):
         started = time.monotonic()
         try:
             result = await asyncio.to_thread(self.transaction.commit, token)
+        except TransactionCommitError as exc:  # type: ignore[misc]
+            latency_ms = int((time.monotonic() - started) * 1000)
+            response_code = None
+            try:
+                response_code = int(exc.code) if exc.code is not None else None
+            except (TypeError, ValueError):
+                response_code = None
+            message = getattr(exc, "message", str(exc))
+            self._log_event(
+                operation="COMMIT",
+                request_url="webpay.transaction.commit",
+                token=token,
+                response_status=response_code,
+                error_message=message,
+                latency_ms=latency_ms,
+            )
+            logger.info(
+                "transaction commit error",
+                extra={"token": token, "response_code": response_code, "event": message},
+            )
+            return response_code or -1
         except Exception as exc:  # noqa: BLE001
             latency_ms = int((time.monotonic() - started) * 1000)
             self._log_event(
