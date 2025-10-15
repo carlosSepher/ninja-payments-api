@@ -29,7 +29,7 @@ class TransbankWebpayPlusProvider(PaymentProvider):
     def __init__(self, settings: Settings):
         self.settings = settings
         options = WebpayOptions(
-            settings.tbk_api_key_id, settings.tbk_api_key_secret, IntegrationType.TEST
+            settings.tbk_api_key_id, settings.tbk_api_key_secret, IntegrationType.LIVE
         )
         self.transaction = Transaction(options)
         self.store = PgPaymentStore()
