@@ -193,7 +193,22 @@ class PaymentsService:
             extra={"buy_order": payment.buy_order, "token": token, "provider": provider_name},
         )
         provider = get_provider_by_name(self.settings, provider_name)
-        response_code = await provider.commit(token)
+        commit_result = await provider.commit(token)
+        authorization_code: str | None = None
+        if isinstance(commit_result, dict):
+            response_code = commit_result.get("response_code", -1)
+            try:
+                response_code = int(response_code)
+            except (TypeError, ValueError):
+                response_code = -1
+            auth_value = commit_result.get("authorization_code")
+            if auth_value is not None:
+                authorization_code = str(auth_value)
+        else:
+            try:
+                response_code = int(commit_result)
+            except (TypeError, ValueError):
+                response_code = -1
         if response_code == 0:
             payment.status = PaymentStatus.AUTHORIZED
         else:
@@ -204,6 +219,7 @@ class PaymentsService:
                 token=token,
                 to_status=payment.status,
                 response_code=response_code,
+                authorization_code=authorization_code,
             )
         except Exception as db_exc:  # noqa: BLE001
             self.logger.info("db commit save error", extra={"token": token, "event": str(db_exc)})
@@ -215,6 +231,7 @@ class PaymentsService:
                 "token": token,
                 "response_code": response_code,
                 "status": payment.status.value,
+                "authorization_code": authorization_code,
             },
         )
         return PaymentStatusResponse(status=payment.status)

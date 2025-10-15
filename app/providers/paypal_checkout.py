@@ -140,6 +140,7 @@ class PayPalCheckoutProvider(PaymentProvider):
         response_status: int | None = None
         response_headers: Dict[str, str] | None = None
         response_body: Dict[str, Any] | None = None
+        capture_id: str | None = None
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(capture_url, headers=headers, json={})
@@ -193,7 +194,6 @@ class PayPalCheckoutProvider(PaymentProvider):
                 return -1
             data = resp.json()
             response_body = {"status": data.get("status")}
-            capture_id = None
             try:
                 captures = (
                     data.get("purchase_units") or [{}]
@@ -266,9 +266,12 @@ class PayPalCheckoutProvider(PaymentProvider):
             latency_ms=latency_ms,
         )
         logger.info("paypal capture status", extra={"token": token, "response_code": 0 if status == "COMPLETED" else -1})
-        if status == "COMPLETED":
-            return 0
-        return -1
+        response_code = 0 if status == "COMPLETED" else -1
+        return {
+            "response_code": response_code,
+            "authorization_code": capture_id,
+            "status": status,
+        }
 
     async def status(self, token: str) -> PaymentStatus | None:
         access_token = await self._get_access_token()

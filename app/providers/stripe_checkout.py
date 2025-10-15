@@ -22,7 +22,7 @@ class StripeCheckoutProvider(PaymentProvider):
     """Stripe Checkout implementation.
 
     create(): creates a Checkout Session and returns (session.url, session.id)
-    commit(): retrieves the Session/PaymentIntent and returns 0 if succeeded.
+    commit(): retrieves the Session/PaymentIntent and returns response metadata.
     """
 
     ZERO_DECIMAL_CURRENCIES = {"CLP", "JPY", "VND", "KRW"}
@@ -124,12 +124,17 @@ class StripeCheckoutProvider(PaymentProvider):
         )
         return session.url, session.id
 
-    async def commit(self, token: str) -> int:
-        """Poll the session/payment intent and map to response code."""
+    async def commit(self, token: str) -> Dict[str, Any]:
+        """Poll the session/payment intent and map to response details."""
 
         def _retrieve() -> Dict[str, Any]:
             session = stripe.checkout.Session.retrieve(  # type: ignore[call-arg]
-                token, expand=["payment_intent"]
+                token,
+                expand=[
+                    "payment_intent",
+                    "payment_intent.charges.data.balance_transaction",
+                    "payment_intent.latest_charge",
+                ],
             )
             pi = getattr(session, "payment_intent", None)
             customer_email = getattr(session, "customer_email", None)
@@ -137,12 +142,26 @@ class StripeCheckoutProvider(PaymentProvider):
                 customer_details = getattr(session, "customer_details", None)
                 if customer_details:
                     customer_email = getattr(customer_details, "email", None)
+            charge_id = None
+            authorization_code = None
+            if pi:
+                charges = getattr(pi, "charges", None)
+                if charges:
+                    charge_list = getattr(charges, "data", None)
+                    if isinstance(charge_list, list) and charge_list:
+                        latest_charge = charge_list[-1]
+                        charge_id = getattr(latest_charge, "id", None)
+                        authorization_code = getattr(latest_charge, "balance_transaction", None) or charge_id
+            if authorization_code is None:
+                authorization_code = getattr(pi, "id", None)
             return {
                 "session_id": session.id,
                 "payment_status": getattr(session, "payment_status", None),
                 "payment_intent_status": getattr(pi, "status", None),
                 "payment_intent_id": getattr(pi, "id", None),
                 "customer_email": customer_email,
+                "charge_id": charge_id,
+                "authorization_code": authorization_code,
             }
 
         started = time.monotonic()
@@ -209,9 +228,18 @@ class StripeCheckoutProvider(PaymentProvider):
                     "stripe metadata email save error",
                     extra={"token": token, "event": str(exc)},
                 )
-        if pi_status == "succeeded" or sess_payment_status == "paid":
-            return 0
-        return -1
+        success = pi_status == "succeeded" or sess_payment_status == "paid"
+        response_code = 0 if success else -1
+        authorization_code = result.get("authorization_code")
+        charge_id = result.get("charge_id")
+        if authorization_code is None:
+            authorization_code = charge_id or result.get("payment_intent_id")
+        return {
+            "response_code": response_code,
+            "authorization_code": authorization_code,
+            "payment_intent_id": result.get("payment_intent_id"),
+            "charge_id": charge_id,
+        }
 
     async def status(self, token: str) -> PaymentStatus | None:
         def _retrieve() -> Dict[str, Any]:

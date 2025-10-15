@@ -131,7 +131,7 @@ class TransbankWebpayPlusProvider(PaymentProvider):
         )
         return redirect_url, token
 
-    async def commit(self, token: str) -> int:
+    async def commit(self, token: str) -> Dict[str, Any]:
         started = time.monotonic()
         try:
             result = await asyncio.to_thread(self.transaction.commit, token)
@@ -155,7 +155,7 @@ class TransbankWebpayPlusProvider(PaymentProvider):
                 "transaction commit error",
                 extra={"token": token, "response_code": response_code, "event": message},
             )
-            return response_code or -1
+            return {"response_code": response_code or -1, "authorization_code": None}
         except Exception as exc:  # noqa: BLE001
             latency_ms = int((time.monotonic() - started) * 1000)
             self._log_event(
@@ -177,6 +177,7 @@ class TransbankWebpayPlusProvider(PaymentProvider):
             response_body={
                 "response_code": response_code,
                 "buy_order": result.get("buy_order"),
+                "authorization_code": result.get("authorization_code"),
             },
             latency_ms=latency_ms,
         )
@@ -188,7 +189,10 @@ class TransbankWebpayPlusProvider(PaymentProvider):
                 "response_code": response_code,
             },
         )
-        return response_code
+        return {
+            "response_code": response_code,
+            "authorization_code": result.get("authorization_code"),
+        }
 
     async def status(self, token: str) -> PaymentStatus | None:
         """Read-only status using Webpay SDK.
