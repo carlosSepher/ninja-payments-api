@@ -17,8 +17,8 @@ class PaymentProvider(ABC):
         """Create a payment and return redirect URL and token."""
 
     @abstractmethod
-    async def commit(self, token: str) -> int:
-        """Commit a payment and return provider response code."""
+    async def commit(self, token: str) -> Any:
+        """Commit a payment and return provider response details."""
 
     @abstractmethod
     async def status(self, token: str) -> PaymentStatus | None:

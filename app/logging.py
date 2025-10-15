@@ -30,6 +30,7 @@ class JsonFormatter(logging.Formatter):
             "token",
             "response_code",
             "status",
+            "authorization_code",
             "idempotency_key",
             "endpoint",
             "method",
