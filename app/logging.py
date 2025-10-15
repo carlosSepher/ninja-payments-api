@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict
+from decimal import Decimal
+from typing import Any, Dict, Iterable
 
 
 class JsonFormatter(logging.Formatter):
     """Format log records as JSON."""
+
+    def _coerce(self, value: Any) -> Any:
+        if isinstance(value, Decimal):
+            return format(value, "f")
+        if isinstance(value, dict):
+            return {str(k): self._coerce(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._coerce(item) for item in value]
+        return value
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401
         data: Dict[str, Any] = {
@@ -31,7 +41,7 @@ class JsonFormatter(logging.Formatter):
         )
         for field in extra_fields:
             if hasattr(record, field):
-                data[field] = getattr(record, field)
+                data[field] = self._coerce(getattr(record, field))
         return json.dumps(data)
 
 
