@@ -53,6 +53,7 @@ class PgPaymentStore:
         success_url: str | None = None,
         failure_url: str | None = None,
         cancel_url: str | None = None,
+        return_url: str | None = None,
     ) -> Payment:
         amount_value = self._normalize_amount(amount_minor)
         if amount_value is None:
@@ -69,6 +70,7 @@ class PgPaymentStore:
             success_url=success_url,
             failure_url=failure_url,
             cancel_url=cancel_url,
+            return_url=return_url,
         )
         payment.status = PaymentStatus(str(status))
         payment.id = int(pid)
@@ -144,7 +146,7 @@ class PgPaymentStore:
                         payment.status.value,
                         token,
                         payment.redirect_url,
-                        None,  # return_url stored per request (not on model)
+                        payment.return_url,
                         payment.success_url,
                         payment.failure_url,
                         payment.cancel_url,
@@ -165,7 +167,7 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
+                    SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url, return_url,
                            success_url, failure_url, cancel_url, company_id,
                            payment_type, commerce_id, product_id, product_name,
                            created_at, provider_metadata, context
@@ -187,6 +189,7 @@ class PgPaymentStore:
                     status,
                     tok,
                     redirect_url,
+                    return_url,
                     success_url,
                     failure_url,
                     cancel_url,
@@ -217,8 +220,10 @@ class PgPaymentStore:
                     success_url=success_url,
                     failure_url=failure_url,
                     cancel_url=cancel_url,
+                    return_url=return_url,
                 )
                 payment.redirect_url = redirect_url
+                payment.return_url = return_url
                 if context:
                     try:
                         payment.context = dict(context)
@@ -234,7 +239,7 @@ class PgPaymentStore:
                 if company_id is not None:
                     cur.execute(
                         """
-                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
+                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url, return_url,
                                success_url, failure_url, cancel_url, company_id,
                                payment_type, commerce_id, product_id, product_name,
                                created_at, provider_metadata, context
@@ -248,7 +253,7 @@ class PgPaymentStore:
                 else:
                     cur.execute(
                         """
-                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url,
+                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url, return_url,
                                success_url, failure_url, cancel_url, company_id,
                                payment_type, commerce_id, product_id, product_name,
                                created_at, provider_metadata, context
@@ -271,6 +276,7 @@ class PgPaymentStore:
                     status,
                     tok,
                     redirect_url,
+                    return_url,
                     success_url,
                     failure_url,
                     cancel_url,
@@ -301,8 +307,10 @@ class PgPaymentStore:
                     success_url=success_url,
                     failure_url=failure_url,
                     cancel_url=cancel_url,
+                    return_url=return_url,
                 )
                 payment.redirect_url = redirect_url
+                payment.return_url = return_url
                 if context:
                     try:
                         payment.context = dict(context)
