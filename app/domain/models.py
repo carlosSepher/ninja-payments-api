@@ -20,6 +20,7 @@ class Payment:
     status: PaymentStatus = PaymentStatus.PENDING
     token: str | None = None
     redirect_url: str | None = None
+    return_url: str | None = None
     provider: str | None = None
     payment_type: PaymentType | None = None
     commerce_id: str | None = None

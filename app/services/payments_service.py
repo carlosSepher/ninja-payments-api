@@ -119,6 +119,7 @@ class PaymentsService:
             success_url=request.success_url,
             failure_url=request.failure_url,
             cancel_url=request.cancel_url,
+            return_url=request.return_url,
             company_id=company.id,
         )
         self.logger.info(
