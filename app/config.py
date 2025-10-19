@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     """Application configuration read from environment variables."""
 
     # General
+    app_env: str = "local"  # e.g. local, staging, production
+    app_version: str | None = None  # git commit hash or semantic version
     api_basic_username: str = "ninja"
     api_basic_password: str = "payments"
     api_bearer_token: str = "testtoken"
