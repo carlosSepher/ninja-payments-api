@@ -83,3 +83,4 @@ def test_webpay_refund_success() -> None:
     refund_resp = client.post("/api/payments/refund", json=refund_payload, headers=headers)
     assert refund_resp.status_code == 200
     assert refund_resp.json()["status"] == "REFUNDED"
+    assert refund_resp.json()["codigoAutorizacion"] == "abc123"

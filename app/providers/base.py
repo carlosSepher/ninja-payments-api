@@ -46,6 +46,7 @@ class ProviderRefundResult:
     ok: bool
     amount: Decimal | None = None
     provider_refund_id: str | None = None
+    authorization_code: str | None = None
     status: str | None = None
     payload: dict[str, Any] | None = None
     error: str | None = None

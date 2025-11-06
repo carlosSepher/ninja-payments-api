@@ -340,6 +340,7 @@ class TransbankWebpayPlusProvider(PaymentProvider):
             ok=bool(ok),
             amount=amount.quantize(Decimal("0.01")),
             provider_refund_id=str(data.get("authorization_code", "")) or None,
+            authorization_code=str(data.get("authorization_code", "")) or None,
             status=str(refund_type or ""),
             payload=data,
             error=None if ok else "Refund not accepted",

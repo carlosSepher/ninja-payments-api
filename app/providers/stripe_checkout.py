@@ -326,6 +326,7 @@ class StripeCheckoutProvider(PaymentProvider):
                 ok=ok,
                 amount=record_amount,
                 provider_refund_id=str(refund_id or "") or None,
+                authorization_code=str(refund_id or "") or None,
                 status=status or None,
                 payload=payload,
                 error=None if ok else status or "unknown",

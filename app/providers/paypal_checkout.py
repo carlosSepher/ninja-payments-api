@@ -482,6 +482,7 @@ class PayPalCheckoutProvider(PaymentProvider):
             ok=status in {"COMPLETED", "PENDING"},
             amount=amount_minor,
             provider_refund_id=str(data.get("id", "")) or None,
+            authorization_code=str(data.get("id", "")) or None,
             status=status or None,
             payload=payload,
             error=None if status in {"COMPLETED", "PENDING"} else "Refund not accepted",

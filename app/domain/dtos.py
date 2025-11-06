@@ -138,3 +138,4 @@ class RefundRequest(BaseModel):
 
 class RefundResponse(BaseModel):
     status: PaymentStatus
+    codigoAutorizacion: str | None = None

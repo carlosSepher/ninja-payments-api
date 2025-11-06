@@ -295,7 +295,12 @@ class PaymentsService:
             return None
         return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    async def refund(self, token: str, amount: Decimal | None = None, company_id: int | None = None) -> PaymentStatus:
+    async def refund(
+        self,
+        token: str,
+        amount: Decimal | None = None,
+        company_id: int | None = None,
+    ) -> tuple[PaymentStatus, str | None]:
         payment = self.store.get_by_token(token)
         if not payment:
             raise ValueError("Unknown token")
@@ -312,13 +317,30 @@ class PaymentsService:
             result.amount if result.amount is not None else (amount if amount is not None else payment.amount)
         )
         refund_status = "SUCCEEDED" if result.ok else "FAILED"
+        refund_type = (result.status or "").upper() if result.status else ""
+        original_auth_code = getattr(payment, "authorization_code", None)
+        refund_authorization_code = result.authorization_code or result.provider_refund_id
+        provider_slug = (provider_name or "").lower()
+        annulment_statuses: dict[str, set[str]] = {
+            "transbank": {"NULLIFIED", "ANNULLED", "ANULACION", "ANULADA"},
+            "webpay": {"NULLIFIED", "ANNULLED", "ANULACION", "ANULADA"},
+            "paypal": {"VOIDED", "VOID", "CANCELED", "CANCELLED"},
+        }
+        annulment_detected = refund_type in annulment_statuses.get(provider_slug, set())
+        if annulment_detected:
+            refund_authorization_code = original_auth_code or refund_authorization_code
+        elif refund_authorization_code is None:
+            refund_authorization_code = original_auth_code
+        if refund_authorization_code is not None:
+            refund_authorization_code = str(refund_authorization_code)
+        provider_refund_identifier = refund_authorization_code or result.provider_refund_id
         try:
             self.store.record_refund(
                 token=token,
                 provider=provider_name,
                 amount=refund_amount,
                 status=refund_status,
-                provider_refund_id=result.provider_refund_id,
+                provider_refund_id=provider_refund_identifier,
                 payload=result.payload,
                 reason=result.error,
             )
@@ -345,4 +367,4 @@ class PaymentsService:
                 extra={"buy_order": payment.buy_order, "token": token, "provider": provider_name},
             )
         # DB updates for refunds can be handled by reconciler/webhooks as needed
-        return payment.status
+        return payment.status, provider_refund_identifier

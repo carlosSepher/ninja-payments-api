@@ -18,6 +18,7 @@ class Payment:
     currency: Currency
     id: int | None = None
     status: PaymentStatus = PaymentStatus.PENDING
+    authorization_code: str | None = None
     token: str | None = None
     redirect_url: str | None = None
     return_url: str | None = None
