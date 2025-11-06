@@ -42,6 +42,7 @@ class PgPaymentStore:
         currency: str,
         provider: str,
         status: str,
+        authorization_code: str | None,
         token: str | None,
         company_id: int | None,
         payment_type: str | None,
@@ -63,6 +64,7 @@ class PgPaymentStore:
             amount=amount_value,
             currency=Currency(str(currency)),
             provider=str(provider) if provider else None,
+            authorization_code=str(authorization_code) if authorization_code else None,
             payment_type=PaymentType(str(payment_type)) if payment_type else None,
             commerce_id=str(commerce_id) if commerce_id else None,
             product_id=str(product_id) if product_id else None,
@@ -167,7 +169,7 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url, return_url,
+                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, redirect_url, return_url,
                            success_url, failure_url, cancel_url, company_id,
                            payment_type, commerce_id, product_id, product_name,
                            created_at, provider_metadata, context
@@ -187,6 +189,7 @@ class PgPaymentStore:
                     currency,
                     provider,
                     status,
+                    authorization_code,
                     tok,
                     redirect_url,
                     return_url,
@@ -209,6 +212,7 @@ class PgPaymentStore:
                     currency=str(currency),
                     provider=str(provider) if provider else '',
                     status=str(status),
+                    authorization_code=authorization_code,
                     token=str(tok) if tok else None,
                     company_id=int(company_id) if company_id is not None else None,
                     payment_type=str(payment_type) if payment_type else None,
@@ -239,7 +243,7 @@ class PgPaymentStore:
                 if company_id is not None:
                     cur.execute(
                         """
-                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url, return_url,
+                        SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, redirect_url, return_url,
                                success_url, failure_url, cancel_url, company_id,
                                payment_type, commerce_id, product_id, product_name,
                                created_at, provider_metadata, context
@@ -253,7 +257,7 @@ class PgPaymentStore:
                 else:
                     cur.execute(
                         """
-                        SELECT id, buy_order, amount_minor, currency, provider, status, token, redirect_url, return_url,
+                        SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, redirect_url, return_url,
                                success_url, failure_url, cancel_url, company_id,
                                payment_type, commerce_id, product_id, product_name,
                                created_at, provider_metadata, context
@@ -274,6 +278,7 @@ class PgPaymentStore:
                     currency,
                     provider,
                     status,
+                    authorization_code,
                     tok,
                     redirect_url,
                     return_url,
@@ -296,6 +301,7 @@ class PgPaymentStore:
                     currency=str(currency),
                     provider=str(provider) if provider else '',
                     status=str(status),
+                    authorization_code=authorization_code,
                     token=str(tok) if tok else None,
                     company_id=int(comp_id) if comp_id is not None else None,
                     payment_type=str(payment_type) if payment_type else None,
@@ -420,7 +426,7 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
+                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, company_id,
                            payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
                       FROM payment
                      WHERE status = 'PENDING'
@@ -436,6 +442,7 @@ class PgPaymentStore:
                         currency,
                         provider,
                         status,
+                        authorization_code,
                         tok,
                         company_id,
                         payment_type,
@@ -452,6 +459,7 @@ class PgPaymentStore:
                         currency=str(currency),
                         provider=str(provider) if provider else '',
                         status=str(status),
+                        authorization_code=authorization_code,
                         token=str(tok) if tok else None,
                         company_id=int(company_id) if company_id is not None else None,
                         payment_type=str(payment_type) if payment_type else None,
@@ -472,7 +480,7 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
+                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, company_id,
                            payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
                       FROM payment
                      ORDER BY created_at DESC
@@ -487,6 +495,7 @@ class PgPaymentStore:
                         currency,
                         provider,
                         status,
+                        authorization_code,
                         tok,
                         company_id,
                         payment_type,
@@ -496,23 +505,24 @@ class PgPaymentStore:
                         created_at,
                         provider_metadata,
                     ) = row
-                payment = self._hydrate_payment(
-                    pid=int(pid),
-                    buy_order=str(buy_order),
-                    amount_minor=amount_minor,
-                    currency=str(currency),
-                    provider=str(provider) if provider else '',
-                    status=str(status),
-                    token=str(tok) if tok else None,
-                    company_id=int(company_id) if company_id is not None else None,
-                    payment_type=str(payment_type) if payment_type else None,
-                    commerce_id=str(commerce_id) if commerce_id else None,
-                    product_id=str(product_id) if product_id else None,
-                    product_name=str(product_name) if product_name else None,
-                    created_at=created_at,
-                    provider_metadata=provider_metadata,
-                )
-                items.append(payment)
+                    payment = self._hydrate_payment(
+                        pid=int(pid),
+                        buy_order=str(buy_order),
+                        amount_minor=amount_minor,
+                        currency=str(currency),
+                        provider=str(provider) if provider else '',
+                        status=str(status),
+                        authorization_code=authorization_code,
+                        token=str(tok) if tok else None,
+                        company_id=int(company_id) if company_id is not None else None,
+                        payment_type=str(payment_type) if payment_type else None,
+                        commerce_id=str(commerce_id) if commerce_id else None,
+                        product_id=str(product_id) if product_id else None,
+                        product_name=str(product_name) if product_name else None,
+                        created_at=created_at,
+                        provider_metadata=provider_metadata,
+                    )
+                    items.append(payment)
         return items
 
     def list_filtered(
@@ -532,7 +542,7 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 base = (
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, token, company_id,
+                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, company_id,
                            payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
                       FROM payment
                     """
@@ -569,6 +579,7 @@ class PgPaymentStore:
                         currency,
                         provider_value,
                         status_value,
+                        authorization_code,
                         tok,
                         company_id,
                         payment_type,
@@ -578,23 +589,24 @@ class PgPaymentStore:
                         created_at,
                         provider_metadata,
                     ) = row
-                payment = self._hydrate_payment(
-                    pid=int(pid),
-                    buy_order=str(buy_order),
-                    amount_minor=amount_minor,
-                    currency=str(currency),
-                    provider=str(provider_value) if provider_value else '',
-                    status=str(status_value),
-                    token=str(tok) if tok else None,
-                    company_id=int(company_id) if company_id is not None else None,
-                    payment_type=str(payment_type) if payment_type else None,
-                    commerce_id=str(commerce_id) if commerce_id else None,
-                    product_id=str(product_id) if product_id else None,
-                    product_name=str(product_name) if product_name else None,
-                    created_at=created_at,
-                    provider_metadata=provider_metadata,
-                )
-                items.append(payment)
+                    payment = self._hydrate_payment(
+                        pid=int(pid),
+                        buy_order=str(buy_order),
+                        amount_minor=amount_minor,
+                        currency=str(currency),
+                        provider=str(provider_value) if provider_value else '',
+                        status=str(status_value),
+                        authorization_code=authorization_code,
+                        token=str(tok) if tok else None,
+                        company_id=int(company_id) if company_id is not None else None,
+                        payment_type=str(payment_type) if payment_type else None,
+                        commerce_id=str(commerce_id) if commerce_id else None,
+                        product_id=str(product_id) if product_id else None,
+                        product_name=str(product_name) if product_name else None,
+                        created_at=created_at,
+                        provider_metadata=provider_metadata,
+                    )
+                    items.append(payment)
         return items
 
 

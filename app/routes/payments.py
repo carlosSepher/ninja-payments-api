@@ -1083,8 +1083,8 @@ async def refund_payment(req: RefundRequest) -> RefundResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown token")
 
     try:
-        status_val = await _service.refund(req.token, req.amount, company_id=company.id)
-        return RefundResponse(status=status_val)
+        status_val, authorization_code = await _service.refund(req.token, req.amount, company_id=company.id)
+        return RefundResponse(status=status_val, codigoAutorizacion=authorization_code)
     except ValueError as exc:  # unknown token
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
