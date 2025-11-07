@@ -28,6 +28,8 @@ class Payment:
     product_id: str | None = None
     product_name: str | None = None
     customer_rut: str | None = None
+    notifica: bool = False
+    contrato: int = 0
     # Optional frontend redirect URLs
     success_url: str | None = None
     failure_url: str | None = None

@@ -55,6 +55,8 @@ class PgPaymentStore:
         failure_url: str | None = None,
         cancel_url: str | None = None,
         return_url: str | None = None,
+        notifica: bool | None = None,
+        contrato: int | None = None,
     ) -> Payment:
         amount_value = self._normalize_amount(amount_minor)
         if amount_value is None:
@@ -69,6 +71,8 @@ class PgPaymentStore:
             commerce_id=str(commerce_id) if commerce_id else None,
             product_id=str(product_id) if product_id else None,
             product_name=str(product_name) if product_name else None,
+            notifica=bool(notifica) if notifica is not None else False,
+            contrato=int(contrato) if contrato is not None else 0,
             success_url=success_url,
             failure_url=failure_url,
             cancel_url=cancel_url,
@@ -161,6 +165,19 @@ class PgPaymentStore:
                 if inserted:
                     payment.id = int(inserted[0])
                     payment.created_at = inserted[1]
+                    notifica_value = bool(getattr(payment, "notifica", False))
+                    contrato_value = int(getattr(payment, "contrato", 0) or 0)
+                    cur.execute(
+                        """
+                        INSERT INTO payment_contract (payment_id, notifica, contrato, created_at, updated_at)
+                        VALUES (%s, %s, %s, NOW(), NOW())
+                        ON CONFLICT (payment_id) DO UPDATE
+                            SET notifica = EXCLUDED.notifica,
+                                contrato = EXCLUDED.contrato,
+                                updated_at = NOW()
+                        """,
+                        (payment.id, notifica_value, contrato_value),
+                    )
 
     def get_by_token(self, token: str) -> Optional[Payment]:
         with get_conn() as conn:
@@ -169,12 +186,15 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, redirect_url, return_url,
-                           success_url, failure_url, cancel_url, company_id,
-                           payment_type, commerce_id, product_id, product_name,
-                           created_at, provider_metadata, context
-                      FROM payment
-                     WHERE token = %s
+                    SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
+                           p.token, p.redirect_url, p.return_url,
+                           p.success_url, p.failure_url, p.cancel_url, p.company_id,
+                           p.payment_type, p.commerce_id, p.product_id, p.product_name,
+                           p.created_at, p.provider_metadata, p.context,
+                           pc.notifica, pc.contrato
+                      FROM payment p
+                      LEFT JOIN payment_contract pc ON pc.payment_id = p.id
+                     WHERE p.token = %s
                      LIMIT 1
                     """,
                     (token,),
@@ -204,6 +224,8 @@ class PgPaymentStore:
                     created_at,
                     provider_metadata,
                     context,
+                    notifica,
+                    contrato,
                 ) = row
                 payment = self._hydrate_payment(
                     pid=int(pid),
@@ -225,6 +247,8 @@ class PgPaymentStore:
                     failure_url=failure_url,
                     cancel_url=cancel_url,
                     return_url=return_url,
+                    notifica=notifica,
+                    contrato=contrato,
                 )
                 payment.redirect_url = redirect_url
                 payment.return_url = return_url
@@ -243,11 +267,14 @@ class PgPaymentStore:
                 if company_id is not None:
                     cur.execute(
                         """
-                        SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, redirect_url, return_url,
-                               success_url, failure_url, cancel_url, company_id,
-                               payment_type, commerce_id, product_id, product_name,
-                               created_at, provider_metadata, context
-                          FROM payment
+                        SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
+                               p.token, p.redirect_url, p.return_url,
+                               p.success_url, p.failure_url, p.cancel_url, p.company_id,
+                               p.payment_type, p.commerce_id, p.product_id, p.product_name,
+                               p.created_at, p.provider_metadata, p.context,
+                               pc.notifica, pc.contrato
+                          FROM payment p
+                          LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                          WHERE idempotency_key = %s AND company_id = %s
                          ORDER BY created_at DESC
                          LIMIT 1
@@ -257,11 +284,14 @@ class PgPaymentStore:
                 else:
                     cur.execute(
                         """
-                        SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, redirect_url, return_url,
-                               success_url, failure_url, cancel_url, company_id,
-                               payment_type, commerce_id, product_id, product_name,
-                               created_at, provider_metadata, context
-                          FROM payment
+                        SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
+                               p.token, p.redirect_url, p.return_url,
+                               p.success_url, p.failure_url, p.cancel_url, p.company_id,
+                               p.payment_type, p.commerce_id, p.product_id, p.product_name,
+                               p.created_at, p.provider_metadata, p.context,
+                               pc.notifica, pc.contrato
+                          FROM payment p
+                          LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                          WHERE idempotency_key = %s
                          ORDER BY created_at DESC
                          LIMIT 1
@@ -293,6 +323,8 @@ class PgPaymentStore:
                     created_at,
                     provider_metadata,
                     context,
+                    notifica,
+                    contrato,
                 ) = row
                 payment = self._hydrate_payment(
                     pid=int(pid),
@@ -314,6 +346,8 @@ class PgPaymentStore:
                     failure_url=failure_url,
                     cancel_url=cancel_url,
                     return_url=return_url,
+                    notifica=notifica,
+                    contrato=contrato,
                 )
                 payment.redirect_url = redirect_url
                 payment.return_url = return_url
@@ -426,11 +460,14 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, company_id,
-                           payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
-                      FROM payment
-                     WHERE status = 'PENDING'
-                     ORDER BY created_at DESC
+                    SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
+                           p.token, p.company_id,
+                           p.payment_type, p.commerce_id, p.product_id, p.product_name, p.created_at, p.provider_metadata,
+                           pc.notifica, pc.contrato
+                      FROM payment p
+                      LEFT JOIN payment_contract pc ON pc.payment_id = p.id
+                     WHERE p.status = 'PENDING'
+                     ORDER BY p.created_at DESC
                      LIMIT 200
                     """,
                 )
@@ -450,9 +487,11 @@ class PgPaymentStore:
                         product_id,
                         product_name,
                         created_at,
-                        provider_metadata,
-                    ) = row
-                    payment = self._hydrate_payment(
+                    provider_metadata,
+                    notifica,
+                    contrato,
+                ) = row
+                payment = self._hydrate_payment(
                         pid=int(pid),
                         buy_order=str(buy_order),
                         amount_minor=amount_minor,
@@ -462,13 +501,15 @@ class PgPaymentStore:
                         authorization_code=authorization_code,
                         token=str(tok) if tok else None,
                         company_id=int(company_id) if company_id is not None else None,
-                        payment_type=str(payment_type) if payment_type else None,
-                        commerce_id=str(commerce_id) if commerce_id else None,
-                        product_id=str(product_id) if product_id else None,
-                        product_name=str(product_name) if product_name else None,
-                        created_at=created_at,
-                        provider_metadata=provider_metadata,
-                    )
+                    payment_type=str(payment_type) if payment_type else None,
+                    commerce_id=str(commerce_id) if commerce_id else None,
+                    product_id=str(product_id) if product_id else None,
+                    product_name=str(product_name) if product_name else None,
+                    created_at=created_at,
+                    provider_metadata=provider_metadata,
+                    notifica=notifica,
+                    contrato=contrato,
+                )
                     items.append(payment)
         return items
 
@@ -480,10 +521,13 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, company_id,
-                           payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
-                      FROM payment
-                     ORDER BY created_at DESC
+                    SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
+                           p.token, p.company_id,
+                           p.payment_type, p.commerce_id, p.product_id, p.product_name, p.created_at, p.provider_metadata,
+                           pc.notifica, pc.contrato
+                      FROM payment p
+                      LEFT JOIN payment_contract pc ON pc.payment_id = p.id
+                     ORDER BY p.created_at DESC
                      LIMIT 200
                     """,
                 )
@@ -503,9 +547,11 @@ class PgPaymentStore:
                         product_id,
                         product_name,
                         created_at,
-                        provider_metadata,
-                    ) = row
-                    payment = self._hydrate_payment(
+                    provider_metadata,
+                    notifica,
+                    contrato,
+                ) = row
+                payment = self._hydrate_payment(
                         pid=int(pid),
                         buy_order=str(buy_order),
                         amount_minor=amount_minor,
@@ -515,13 +561,15 @@ class PgPaymentStore:
                         authorization_code=authorization_code,
                         token=str(tok) if tok else None,
                         company_id=int(company_id) if company_id is not None else None,
-                        payment_type=str(payment_type) if payment_type else None,
-                        commerce_id=str(commerce_id) if commerce_id else None,
-                        product_id=str(product_id) if product_id else None,
-                        product_name=str(product_name) if product_name else None,
-                        created_at=created_at,
-                        provider_metadata=provider_metadata,
-                    )
+                    payment_type=str(payment_type) if payment_type else None,
+                    commerce_id=str(commerce_id) if commerce_id else None,
+                    product_id=str(product_id) if product_id else None,
+                    product_name=str(product_name) if product_name else None,
+                    created_at=created_at,
+                    provider_metadata=provider_metadata,
+                    notifica=notifica,
+                    contrato=contrato,
+                )
                     items.append(payment)
         return items
 
@@ -542,31 +590,34 @@ class PgPaymentStore:
             with conn.cursor() as cur:
                 base = (
                     """
-                    SELECT id, buy_order, amount_minor, currency, provider, status, authorization_code, token, company_id,
-                           payment_type, commerce_id, product_id, product_name, created_at, provider_metadata
-                      FROM payment
+                    SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
+                           p.token, p.company_id,
+                           p.payment_type, p.commerce_id, p.product_id, p.product_name, p.created_at, p.provider_metadata,
+                           pc.notifica, pc.contrato
+                      FROM payment p
+                      LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                     """
                 )
                 conditions: list[str] = []
                 params: list[Any] = []
                 if provider:
-                    conditions.append("provider = %s")
+                    conditions.append("p.provider = %s")
                     params.append(provider)
                 if status:
-                    conditions.append("status = %s")
+                    conditions.append("p.status = %s")
                     params.append(status.value)
                 if start:
-                    conditions.append("created_at >= %s")
+                    conditions.append("p.created_at >= %s")
                     params.append(start)
                 if end:
-                    conditions.append("created_at <= %s")
+                    conditions.append("p.created_at <= %s")
                     params.append(end)
                 if token:
-                    conditions.append("token = %s")
+                    conditions.append("p.token = %s")
                     params.append(token)
                 if conditions:
                     base += " WHERE " + " AND ".join(conditions)
-                base += " ORDER BY created_at DESC"
+                base += " ORDER BY p.created_at DESC"
                 if limit:
                     base += " LIMIT %s"
                     params.append(limit)
@@ -588,6 +639,8 @@ class PgPaymentStore:
                         product_name,
                         created_at,
                         provider_metadata,
+                        notifica,
+                        contrato,
                     ) = row
                     payment = self._hydrate_payment(
                         pid=int(pid),
@@ -605,6 +658,8 @@ class PgPaymentStore:
                         product_name=str(product_name) if product_name else None,
                         created_at=created_at,
                         provider_metadata=provider_metadata,
+                        notifica=notifica,
+                        contrato=contrato,
                     )
                     items.append(payment)
         return items
