@@ -57,6 +57,12 @@ class PaymentCreateRequest(BaseModel):
     customer_rut: str | None = Field(
         default=None, description="RUT del cliente asociado a la orden (opcional)"
     )
+    notifica: bool = Field(
+        default=False, description="Indica si se debe notificar externamente el pago"
+    )
+    contrato: int = Field(
+        default=0, description="Identificador numérico de contrato asociado al pago"
+    )
 
     @validator("amount", pre=True)
     def _validate_amount(cls, value: Any) -> Decimal:  # noqa: D417

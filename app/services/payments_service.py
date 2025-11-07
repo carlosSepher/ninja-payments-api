@@ -116,6 +116,8 @@ class PaymentsService:
             product_id=request.product_id,
             product_name=request.product_name or request.buy_order,
             customer_rut=getattr(request, 'customer_rut', None),
+            notifica=bool(getattr(request, "notifica", False)),
+            contrato=int(getattr(request, "contrato", 0) or 0),
             success_url=request.success_url,
             failure_url=request.failure_url,
             cancel_url=request.cancel_url,
