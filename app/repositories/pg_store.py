@@ -491,7 +491,7 @@ class PgPaymentStore:
                     notifica,
                     contrato,
                 ) = row
-                payment = self._hydrate_payment(
+                    payment = self._hydrate_payment(
                         pid=int(pid),
                         buy_order=str(buy_order),
                         amount_minor=amount_minor,
@@ -501,15 +501,15 @@ class PgPaymentStore:
                         authorization_code=authorization_code,
                         token=str(tok) if tok else None,
                         company_id=int(company_id) if company_id is not None else None,
-                    payment_type=str(payment_type) if payment_type else None,
-                    commerce_id=str(commerce_id) if commerce_id else None,
-                    product_id=str(product_id) if product_id else None,
-                    product_name=str(product_name) if product_name else None,
-                    created_at=created_at,
-                    provider_metadata=provider_metadata,
-                    notifica=notifica,
-                    contrato=contrato,
-                )
+                        payment_type=str(payment_type) if payment_type else None,
+                        commerce_id=str(commerce_id) if commerce_id else None,
+                        product_id=str(product_id) if product_id else None,
+                        product_name=str(product_name) if product_name else None,
+                        created_at=created_at,
+                        provider_metadata=provider_metadata,
+                        notifica=notifica,
+                        contrato=contrato,
+                    )
                     items.append(payment)
         return items
 
@@ -547,11 +547,11 @@ class PgPaymentStore:
                         product_id,
                         product_name,
                         created_at,
-                    provider_metadata,
-                    notifica,
-                    contrato,
-                ) = row
-                payment = self._hydrate_payment(
+                        provider_metadata,
+                        notifica,
+                        contrato,
+                    ) = row
+                    payment = self._hydrate_payment(
                         pid=int(pid),
                         buy_order=str(buy_order),
                         amount_minor=amount_minor,
@@ -561,15 +561,15 @@ class PgPaymentStore:
                         authorization_code=authorization_code,
                         token=str(tok) if tok else None,
                         company_id=int(company_id) if company_id is not None else None,
-                    payment_type=str(payment_type) if payment_type else None,
-                    commerce_id=str(commerce_id) if commerce_id else None,
-                    product_id=str(product_id) if product_id else None,
-                    product_name=str(product_name) if product_name else None,
-                    created_at=created_at,
-                    provider_metadata=provider_metadata,
-                    notifica=notifica,
-                    contrato=contrato,
-                )
+                        payment_type=str(payment_type) if payment_type else None,
+                        commerce_id=str(commerce_id) if commerce_id else None,
+                        product_id=str(product_id) if product_id else None,
+                        product_name=str(product_name) if product_name else None,
+                        created_at=created_at,
+                        provider_metadata=provider_metadata,
+                        notifica=notifica,
+                        contrato=contrato,
+                    )
                     items.append(payment)
         return items
 
