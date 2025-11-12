@@ -30,6 +30,10 @@ class Payment:
     customer_rut: str | None = None
     notifica: bool = False
     contrato: int = 0
+    cuotas: list[int] = field(default_factory=list)
+    tipo_pago: str = ""
+    depositante_nombre: str | None = None
+    depositante_rut: str | None = None
     # Optional frontend redirect URLs
     success_url: str | None = None
     failure_url: str | None = None

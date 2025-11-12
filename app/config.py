@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,6 +9,7 @@ class Settings(BaseSettings):
 
     # General
     app_env: str = "local"  # e.g. local, staging, production
+    ENV_TYPE: str = Field(default="test", alias="ENV_TYPE")  # accepted values: test | production
     app_version: str | None = None  # git commit hash or semantic version
     api_basic_username: str = "ninja"
     api_basic_password: str = "payments"
