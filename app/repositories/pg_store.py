@@ -8,10 +8,21 @@ from app.db.client import get_conn
 from app.domain.enums import Currency, PaymentType
 from app.domain.models import Payment
 from app.domain.statuses import PaymentStatus
+from app.config import settings
 from psycopg2.extras import Json
 
 
 MONEY_QUANT = Decimal("0.01")
+
+
+def _resolve_payment_environment() -> str:
+    raw = (getattr(settings, "ENV_TYPE", None) or "test").lower()
+    if raw in {"production", "prod", "live"}:
+        return "live"
+    return "test"
+
+
+PAYMENT_ENVIRONMENT = _resolve_payment_environment()
 
 
 class PgPaymentStore:
@@ -57,6 +68,8 @@ class PgPaymentStore:
         return_url: str | None = None,
         notifica: bool | None = None,
         contrato: int | None = None,
+        cuotas: list[int] | None = None,
+        tipo_pago: str | None = None,
     ) -> Payment:
         amount_value = self._normalize_amount(amount_minor)
         if amount_value is None:
@@ -73,6 +86,8 @@ class PgPaymentStore:
             product_name=str(product_name) if product_name else None,
             notifica=bool(notifica) if notifica is not None else False,
             contrato=int(contrato) if contrato is not None else 0,
+            cuotas=list(cuotas or []),
+            tipo_pago=str(tipo_pago).strip() if tipo_pago is not None else "",
             success_url=success_url,
             failure_url=failure_url,
             cancel_url=cancel_url,
@@ -113,7 +128,14 @@ class PgPaymentStore:
                             updated_at = NOW()
                     RETURNING id
                     """,
-                    (payment.buy_order, payment.company_id, 'test', payment.currency.value, amount_value, getattr(payment, 'customer_rut', None)),
+                    (
+                        payment.buy_order,
+                        payment.company_id,
+                        PAYMENT_ENVIRONMENT,
+                        payment.currency.value,
+                        amount_value,
+                        getattr(payment, 'customer_rut', None),
+                    ),
                 )
                 row = cur.fetchone()
                 order_id = row[0] if row else None
@@ -148,7 +170,7 @@ class PgPaymentStore:
                         payment.commerce_id,
                         payment.product_id,
                         payment.product_name,
-                        'test',
+                        PAYMENT_ENVIRONMENT,
                         payment.status.value,
                         token,
                         payment.redirect_url,
@@ -167,17 +189,36 @@ class PgPaymentStore:
                     payment.created_at = inserted[1]
                     notifica_value = bool(getattr(payment, "notifica", False))
                     contrato_value = int(getattr(payment, "contrato", 0) or 0)
+                    cuotas_raw = getattr(payment, "cuotas", None) or []
+                    cuotas_value = list(cuotas_raw)
+                    tipo_pago_value = str(getattr(payment, "tipo_pago", "") or "").strip()
                     cur.execute(
                         """
-                        INSERT INTO payment_contract (payment_id, notifica, contrato, created_at, updated_at)
-                        VALUES (%s, %s, %s, NOW(), NOW())
+                        INSERT INTO payment_contract (payment_id, notifica, contrato, cuotas, tipo_pago, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
                         ON CONFLICT (payment_id) DO UPDATE
                             SET notifica = EXCLUDED.notifica,
                                 contrato = EXCLUDED.contrato,
+                                cuotas = EXCLUDED.cuotas,
+                                tipo_pago = EXCLUDED.tipo_pago,
                                 updated_at = NOW()
                         """,
-                        (payment.id, notifica_value, contrato_value),
+                        (payment.id, notifica_value, contrato_value, cuotas_value, tipo_pago_value),
                     )
+                    nombre_depositante = (getattr(payment, "depositante_nombre", None) or "").strip() or None
+                    rut_depositante = getattr(payment, "depositante_rut", None)
+                    if nombre_depositante or rut_depositante:
+                        cur.execute(
+                            """
+                            INSERT INTO payment_deposit_info (payment_id, nombre_depositante, rut_depositante, created_at, updated_at)
+                            VALUES (%s, %s, %s, NOW(), NOW())
+                            ON CONFLICT (payment_id) DO UPDATE
+                                SET nombre_depositante = COALESCE(EXCLUDED.nombre_depositante, payment_deposit_info.nombre_depositante),
+                                    rut_depositante = COALESCE(EXCLUDED.rut_depositante, payment_deposit_info.rut_depositante),
+                                    updated_at = NOW()
+                            """,
+                            (payment.id, nombre_depositante, rut_depositante),
+                        )
 
     def get_by_token(self, token: str) -> Optional[Payment]:
         with get_conn() as conn:
@@ -191,7 +232,7 @@ class PgPaymentStore:
                            p.success_url, p.failure_url, p.cancel_url, p.company_id,
                            p.payment_type, p.commerce_id, p.product_id, p.product_name,
                            p.created_at, p.provider_metadata, p.context,
-                           pc.notifica, pc.contrato
+                           pc.notifica, pc.contrato, pc.cuotas, pc.tipo_pago
                       FROM payment p
                       LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                      WHERE p.token = %s
@@ -226,6 +267,8 @@ class PgPaymentStore:
                     context,
                     notifica,
                     contrato,
+                    cuotas,
+                    tipo_pago,
                 ) = row
                 payment = self._hydrate_payment(
                     pid=int(pid),
@@ -249,6 +292,8 @@ class PgPaymentStore:
                     return_url=return_url,
                     notifica=notifica,
                     contrato=contrato,
+                    cuotas=cuotas,
+                    tipo_pago=tipo_pago,
                 )
                 payment.redirect_url = redirect_url
                 payment.return_url = return_url
@@ -272,7 +317,7 @@ class PgPaymentStore:
                                p.success_url, p.failure_url, p.cancel_url, p.company_id,
                                p.payment_type, p.commerce_id, p.product_id, p.product_name,
                                p.created_at, p.provider_metadata, p.context,
-                               pc.notifica, pc.contrato
+                               pc.notifica, pc.contrato, pc.cuotas, pc.tipo_pago
                           FROM payment p
                           LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                          WHERE idempotency_key = %s AND company_id = %s
@@ -289,7 +334,7 @@ class PgPaymentStore:
                                p.success_url, p.failure_url, p.cancel_url, p.company_id,
                                p.payment_type, p.commerce_id, p.product_id, p.product_name,
                                p.created_at, p.provider_metadata, p.context,
-                               pc.notifica, pc.contrato
+                               pc.notifica, pc.contrato, pc.cuotas, pc.tipo_pago
                           FROM payment p
                           LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                          WHERE idempotency_key = %s
@@ -325,6 +370,8 @@ class PgPaymentStore:
                     context,
                     notifica,
                     contrato,
+                    cuotas,
+                    tipo_pago,
                 ) = row
                 payment = self._hydrate_payment(
                     pid=int(pid),
@@ -348,6 +395,8 @@ class PgPaymentStore:
                     return_url=return_url,
                     notifica=notifica,
                     contrato=contrato,
+                    cuotas=cuotas,
+                    tipo_pago=tipo_pago,
                 )
                 payment.redirect_url = redirect_url
                 payment.return_url = return_url
@@ -463,7 +512,7 @@ class PgPaymentStore:
                     SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
                            p.token, p.company_id,
                            p.payment_type, p.commerce_id, p.product_id, p.product_name, p.created_at, p.provider_metadata,
-                           pc.notifica, pc.contrato
+                           pc.notifica, pc.contrato, pc.cuotas, pc.tipo_pago
                       FROM payment p
                       LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                      WHERE p.status = 'PENDING'
@@ -487,10 +536,12 @@ class PgPaymentStore:
                         product_id,
                         product_name,
                         created_at,
-                    provider_metadata,
-                    notifica,
-                    contrato,
-                ) = row
+                        provider_metadata,
+                        notifica,
+                        contrato,
+                        cuotas,
+                        tipo_pago,
+                    ) = row
                     payment = self._hydrate_payment(
                         pid=int(pid),
                         buy_order=str(buy_order),
@@ -509,6 +560,8 @@ class PgPaymentStore:
                         provider_metadata=provider_metadata,
                         notifica=notifica,
                         contrato=contrato,
+                        cuotas=cuotas,
+                        tipo_pago=tipo_pago,
                     )
                     items.append(payment)
         return items
@@ -524,7 +577,7 @@ class PgPaymentStore:
                     SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
                            p.token, p.company_id,
                            p.payment_type, p.commerce_id, p.product_id, p.product_name, p.created_at, p.provider_metadata,
-                           pc.notifica, pc.contrato
+                           pc.notifica, pc.contrato, pc.cuotas, pc.tipo_pago
                       FROM payment p
                       LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                      ORDER BY p.created_at DESC
@@ -550,6 +603,8 @@ class PgPaymentStore:
                         provider_metadata,
                         notifica,
                         contrato,
+                        cuotas,
+                        tipo_pago,
                     ) = row
                     payment = self._hydrate_payment(
                         pid=int(pid),
@@ -569,6 +624,8 @@ class PgPaymentStore:
                         provider_metadata=provider_metadata,
                         notifica=notifica,
                         contrato=contrato,
+                        cuotas=cuotas,
+                        tipo_pago=tipo_pago,
                     )
                     items.append(payment)
         return items
@@ -593,7 +650,7 @@ class PgPaymentStore:
                     SELECT p.id, p.buy_order, p.amount_minor, p.currency, p.provider, p.status, p.authorization_code,
                            p.token, p.company_id,
                            p.payment_type, p.commerce_id, p.product_id, p.product_name, p.created_at, p.provider_metadata,
-                           pc.notifica, pc.contrato
+                           pc.notifica, pc.contrato, pc.cuotas, pc.tipo_pago
                       FROM payment p
                       LEFT JOIN payment_contract pc ON pc.payment_id = p.id
                     """
@@ -641,6 +698,8 @@ class PgPaymentStore:
                         provider_metadata,
                         notifica,
                         contrato,
+                        cuotas,
+                        tipo_pago,
                     ) = row
                     payment = self._hydrate_payment(
                         pid=int(pid),
@@ -660,6 +719,8 @@ class PgPaymentStore:
                         provider_metadata=provider_metadata,
                         notifica=notifica,
                         contrato=contrato,
+                        cuotas=cuotas,
+                        tipo_pago=tipo_pago,
                     )
                     items.append(payment)
         return items

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, validator
 
 from .enums import Currency, PaymentType, ProviderName
 from .statuses import PaymentStatus
@@ -63,10 +63,38 @@ class PaymentCreateRequest(BaseModel):
     contrato: int = Field(
         default=0, description="Identificador numérico de contrato asociado al pago"
     )
+    cuotas: List[int] = Field(
+        default_factory=list,
+        description="Colección numérica de cuotas (ej. [3,6,12])",
+    )
+    tipoPago: str = Field(
+        default="",
+        description="Descripción del tipo de pago (ej. 'CREDITO', 'DEBITO')",
+    )
+    nombreDepositante: str | None = Field(
+        default=None,
+        description="Nombre completo del depositante (opcional)",
+    )
 
     @validator("amount", pre=True)
     def _validate_amount(cls, value: Any) -> Decimal:  # noqa: D417
         return _normalize_money(value)
+
+    @field_validator("cuotas", mode="before")
+    def _validate_cuotas(cls, value: Iterable[Any] | Any) -> list[int]:  # noqa: D417
+        if value in (None, "", []):
+            return []
+        if isinstance(value, (list, tuple, set)):
+            iterable = value
+        else:
+            iterable = [value]
+        cleaned: list[int] = []
+        for item in iterable:
+            try:
+                cleaned.append(int(item))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("cuotas debe contener solo números") from exc
+        return cleaned
 
 
 class RedirectInfo(BaseModel):
