@@ -34,6 +34,7 @@ class Payment:
     tipo_pago: str = ""
     depositante_nombre: str | None = None
     depositante_rut: str | None = None
+    auxiliar_amount: Decimal | None = None
     # Optional frontend redirect URLs
     success_url: str | None = None
     failure_url: str | None = None

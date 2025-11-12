@@ -75,6 +75,10 @@ class PaymentCreateRequest(BaseModel):
         default=None,
         description="Nombre completo del depositante (opcional)",
     )
+    auxiliarAmount: Decimal | None = Field(
+        default=None,
+        description="Monto auxiliar para monedas distintas de CLP",
+    )
 
     @validator("amount", pre=True)
     def _validate_amount(cls, value: Any) -> Decimal:  # noqa: D417
@@ -95,6 +99,12 @@ class PaymentCreateRequest(BaseModel):
             except (TypeError, ValueError) as exc:
                 raise ValueError("cuotas debe contener solo números") from exc
         return cleaned
+
+    @validator("auxiliarAmount", pre=True)
+    def _validate_aux_amount(cls, value: Any) -> Decimal | None:  # noqa: D417
+        if value in (None, ""):
+            return None
+        return _normalize_money(value)
 
 
 class RedirectInfo(BaseModel):
