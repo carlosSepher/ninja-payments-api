@@ -104,6 +104,7 @@ class PgPaymentStore:
                 payment.provider_metadata = dict(provider_metadata)
             except Exception:  # noqa: BLE001
                 payment.provider_metadata = provider_metadata
+        payment.auxiliar_amount = getattr(payment, "auxiliar_amount", None)
         return payment
 
     def save(self, payment: Payment, token: str, idempotency_key: str | None = None) -> None:
@@ -219,6 +220,24 @@ class PgPaymentStore:
                             """,
                             (payment.id, nombre_depositante, rut_depositante),
                         )
+                    aux_amount = getattr(payment, "auxiliar_amount", None)
+                    if aux_amount is not None and getattr(payment, "currency", None) and payment.currency.value != "CLP":
+                        aux_value = self._normalize_amount(aux_amount)
+                        base_amount = self._normalize_amount(payment.amount)
+                        currency_code = payment.currency.value
+                        if aux_value is not None and base_amount is not None:
+                            cur.execute(
+                                """
+                                INSERT INTO payment_aux_amount (payment_id, amount, auxiliar_amount, currency, created_at, updated_at)
+                                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                                ON CONFLICT (payment_id) DO UPDATE
+                                    SET amount = EXCLUDED.amount,
+                                        auxiliar_amount = EXCLUDED.auxiliar_amount,
+                                        currency = EXCLUDED.currency,
+                                        updated_at = NOW()
+                                """,
+                                (payment.id, base_amount, aux_value, currency_code),
+                            )
 
     def get_by_token(self, token: str) -> Optional[Payment]:
         with get_conn() as conn:

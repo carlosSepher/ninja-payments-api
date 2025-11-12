@@ -106,6 +106,8 @@ class PaymentsService:
 
         # Resolve provider per request (fallback to settings)
 
+        auxiliary_amount = request.auxiliarAmount if request.currency != Currency.CLP else None
+
         payment = Payment(
             buy_order=request.buy_order,
             amount=request.amount,
@@ -122,6 +124,7 @@ class PaymentsService:
             tipo_pago=str(getattr(request, "tipoPago", "") or ""),
             depositante_nombre=str(getattr(request, "nombreDepositante", "") or "").strip() or None,
             depositante_rut=getattr(request, "customer_rut", None),
+            auxiliar_amount=auxiliary_amount,
             success_url=request.success_url,
             failure_url=request.failure_url,
             cancel_url=request.cancel_url,
